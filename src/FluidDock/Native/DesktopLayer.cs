@@ -26,13 +26,30 @@ internal static class DesktopLayer
     /// </summary>
     public static IntPtr Find()
     {
-        IntPtr progman = Win32.FindWindowW("Progman", null);
-        if (progman == IntPtr.Zero) return IntPtr.Zero;
+        IntPtr owner = IconViewOwner();
+        return owner != IntPtr.Zero ? owner : Win32.FindWindowW("Progman", null);
+    }
 
+    /// <summary>
+    /// Whether the desktop is finished enough to be worth parenting into.
+    ///
+    /// Progman exists from the moment Explorer starts, but the icon view under it is created
+    /// separately and a little later - and TaskbarCreated, the only notice we get that the shell
+    /// came back, can arrive in between. Joining during that gap is worse than waiting: a newly
+    /// created child goes to the top of its parent's z-order, so the view appears above the dock
+    /// and leaves it drawn but dead to the mouse. Waiting for the view means never landing there.
+    /// </summary>
+    public static bool Ready() => IconViewOwner() != IntPtr.Zero;
+
+    /// <summary>The window holding the desktop icon view, or Zero if there is not one yet.</summary>
+    private static IntPtr IconViewOwner()
+    {
         // Normally the icon view lives directly under Progman. During a wallpaper slideshow
         // Explorer sometimes moves it into a WorkerW instead, and then that WorkerW is the
         // window applications sit above, so it is the one to join.
-        if (Win32.FindWindowExW(progman, IntPtr.Zero, "SHELLDLL_DefView", null) != IntPtr.Zero)
+        IntPtr progman = Win32.FindWindowW("Progman", null);
+        if (progman != IntPtr.Zero &&
+            Win32.FindWindowExW(progman, IntPtr.Zero, "SHELLDLL_DefView", null) != IntPtr.Zero)
             return progman;
 
         IntPtr owner = IntPtr.Zero;
@@ -45,6 +62,6 @@ internal static class DesktopLayer
             return false;
         }, IntPtr.Zero);
 
-        return owner != IntPtr.Zero ? owner : progman;
+        return owner;
     }
 }

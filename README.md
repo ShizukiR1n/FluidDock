@@ -31,7 +31,9 @@ tools\Publish.ps1        # -> dist\FluidDock.exe，自包含单文件，约 95 M
 
 自包含是有意的：dev 构建靠注册表找到系统里的 .NET 9，那是运气不是设计。压缩和 ReadyToRun 两个开关默认都关着，理由是实测出来的，见 `tools\Publish.ps1` 头部注释和 `tools\PackagingCost.ps1` —— 简单说，压缩省 92 MB 磁盘要拿 114 MB 内存和双倍启动时间换，因为压缩过的 bundle 条目无法内存映射，只能解压到私有堆上。
 
-退出：托盘右键 → 退出，或 `Ctrl+Alt+Q`。同时只能跑一个实例。
+退出：托盘右键 → 退出。这是唯一的退出方式，也是有意的 —— 原来还有个 `Ctrl+Alt+Q`，但它注册在 Dock 窗口上，而那个窗口的生死由 Explorer 说了算（见下），所以它在最需要它的时候恰好不能用。
+
+托盘图标的**双击目前不做任何事**，留给以后的设置窗口。同时只能跑一个实例。
 
 ---
 
@@ -61,7 +63,7 @@ tools\Publish.ps1        # -> dist\FluidDock.exe，自包含单文件，约 95 M
 | `BounceTest.ps1` | 点击→启动→弹跳→停止的完整链路 |
 | `HideShowTest.ps1` | 托盘隐藏再显示后 Dock 仍然完好 |
 | `TrayMenuTest.ps1` | 托盘菜单两个命令都有效，退出会清理图标 |
-| `ExplorerRestartTest.ps1` | Explorer 重启后进程/Dock 窗口/托盘图标各自的死活，以及两条退出路径还灵不灵 |
+| `ExplorerRestartTest.ps1` | Explorer 重启后 Dock 自己重建、回到桌面层、还会放大，且退出仍然有效 |
 | `PackagingCost.ps1` | 四种打包方式的磁盘/内存/启动对比 |
 
 ### 写这些脚本时反复踩的坑
@@ -74,23 +76,25 @@ tools\Publish.ps1        # -> dist\FluidDock.exe，自包含单文件，约 95 M
 
 ---
 
+## Explorer 重启
+
+Dock 是 Progman 的子窗口，所以 Explorer 一重启，Dock 窗口就被销毁 —— 进程还活着，但屏幕上什么都没有。曾经这是个死局：退出是往 Dock 窗口发 `WM_CLOSE`，热键也注册在同一个窗口上，两条路一起断，只能开任务管理器。
+
+现在两条都不再依赖那个窗口：
+
+| | 做法 |
+|---|---|
+| 退出 | 直接 `PostQuitMessage`，走托盘窗口 —— 它是独立的顶层窗口，Explorer 拿不走 |
+| 重建 | 托盘窗口收到 `TaskbarCreated` 后调 `DockWindow.Recreate()` |
+| 保留的东西 | Compositor、SurfaceFactory（及其 D3D 设备）、配置监视器、前台钩子。只有 HWND 和绑在它上面的 `DesktopWindowTarget` 需要换 |
+| 何时认爹 | 等 `SHELLDLL_DefView` 出现再 `SetParent`，每 500ms 试一次，最多 10 秒 |
+
+最后一条不是保险起见。`TaskbarCreated` 是在 Explorer 还没装配完时广播的，那时 Progman 可能已经在了而图标视图还没有；此刻 reparent 进去，图标视图随后创建并落在 z-order 顶上，结果是一个**画得出来但点不动**的 Dock。等视图出现就不会落到那个位置。等待期间 Dock 是普通窗口 —— 在屏幕上、能用，只是没沉进桌面。
+
+`WM_DESTROY` 因此**不再** `PostQuitMessage`：这个窗口的死不等于程序的死。
+
 ## 已知限制
 
-- **Explorer 重启会把进程变成僵尸。** 已测（`tools\ExplorerRestartTest.ps1`），两次结果一致，比原先估计的严重得多：
-
-  | | 结果 |
-  |---|---|
-  | 进程 | 存活，消息循环照常跑 |
-  | Dock 窗口 | 被销毁，不会重建 |
-  | `WM_DESTROY` → `PostQuitMessage` | **没送达** —— 进程不知道自己的窗口没了 |
-  | 托盘图标 | 通过 `TaskbarCreated` 正确重新注册 ✓ |
-  | 托盘菜单 | 能打开，且「显示 Dock」仍然打勾 —— 在说谎 |
-  | 点「显示 Dock」 | 无反应（`ShowWindow` 作用在已销毁的句柄上） |
-  | 点「退出」 | 无反应（`PostMessageW` 发往已销毁的 Dock 窗口） |
-  | `Ctrl+Alt+Q` | 无反应（热键注册在 Dock 窗口上，随它一起没了） |
-  | 唯一出路 | 任务管理器 |
-
-  根因：`Program.cs` 把退出路径拴在 Dock 窗口上（`tray.ExitRequested` 往 `dock.Handle` 发 `WM_CLOSE`），热键也注册在同一个窗口上，而那个窗口的生命周期由 Explorer 决定。整个设计里唯一按预期工作的是托盘窗口独立存活并重新注册图标 —— 重建 Dock 的钩子就在那儿，只是还没接上。
 - 静止时图标之间约 12px 的间隙在窗口区域之外，光标正好从间隙进入时要碰到图标才会触发放大。
 - 弹跳期间区域完全打开，此刻恰好在拖框选会看到空洞。
 - 启动弹跳大部分时候被拉起的应用窗口盖住了。

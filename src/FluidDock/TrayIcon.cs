@@ -11,8 +11,9 @@ namespace FluidDock;
 /// dismiss correctly unless its owner can be brought to the foreground first - the shell's own
 /// documented workaround for exactly this. Forcing that on the dock window would mean handing it
 /// focus, which is the one thing it is built never to take. The second reason is lifetime: when
-/// Explorer restarts it destroys Progman and every child, the dock included. A separate window
-/// survives that, which is what will eventually let the dock be rebuilt instead of dying with it.
+/// Explorer restarts it destroys Progman and every child, the dock included. This window survives
+/// that, so it is where both halves of the recovery live - the TaskbarCreated handler that puts
+/// the dock back, and the exit route, which has to keep working even if the rebuild does not.
 /// </summary>
 internal sealed class TrayIcon : IDisposable
 {
@@ -33,8 +34,17 @@ internal sealed class TrayIcon : IDisposable
 
     public event Action? ExitRequested;
 
+    /// <summary>
+    /// Raised once Explorer has restarted and the icon is back in the rebuilt notification area.
+    /// The dock does not survive that, so this is its cue to build itself a new window.
+    /// </summary>
+    public event Action? ShellRestarted;
+
     /// <summary>Whether the menu's show item is currently ticked.</summary>
     public bool DockVisible { get; set; } = true;
+
+    /// <summary>Where to aim a shutdown request from outside the message loop.</summary>
+    public IntPtr Handle => _hwnd;
 
     public void Create()
     {
@@ -123,27 +133,30 @@ internal sealed class TrayIcon : IDisposable
 
     private IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)
     {
-        // Explorer restarted and threw away every registered icon. Add ours back.
+        // Explorer restarted and threw away every registered icon. Add ours back, then say so -
+        // the icon is the easy half, and the dock's window went down with Progman.
         if (msg == _taskbarCreated && _taskbarCreated != 0)
         {
             _added = false;
             Add();
+            ShellRestarted?.Invoke();
             return IntPtr.Zero;
         }
 
         if (msg == Win32.WM_APP_TRAY)
         {
-            switch ((uint)(long)lParam)
-            {
-                case Win32.WM_RBUTTONUP:
-                    ShowMenu();
-                    return IntPtr.Zero;
+            // Left-click and double-click are deliberately unhandled. Double-click used to toggle
+            // the dock, which is a poor use of the gesture now that it is spoken for: it opens
+            // the settings window, once there is one.
+            if ((uint)(long)lParam == Win32.WM_RBUTTONUP) ShowMenu();
+            return IntPtr.Zero;
+        }
 
-                case Win32.WM_LBUTTONDBLCLK:
-                    Toggle();
-                    return IntPtr.Zero;
-            }
-
+        // The one place a shutdown can be aimed at from off the message loop, since this window
+        // outlives the dock's. DestroyWindow does not send WM_CLOSE, so Dispose cannot re-enter.
+        if (msg == Win32.WM_CLOSE)
+        {
+            ExitRequested?.Invoke();
             return IntPtr.Zero;
         }
 

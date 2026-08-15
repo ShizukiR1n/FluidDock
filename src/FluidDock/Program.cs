@@ -41,20 +41,30 @@ internal static class Program
             CompositorInterop.EnsureDispatcherQueueOnCurrentThread();
             Note("Dispatcher queue ready");
 
-            dock = new DockWindow(DockConfig.DefaultPath);
-            dock.Create();
-            Note($"Dock created, hwnd=0x{dock.Handle:X}, gpu={dock.AdapterName}");
+            // Named locally as well as stored in the outer variable: the handlers below close
+            // over it, and a captured nullable is not something the compiler will let them
+            // dereference. The outer one exists only so the finally block can still see it.
+            var window = new DockWindow(DockConfig.DefaultPath);
+            dock = window;
+            window.Create();
+            Note($"Dock created, hwnd=0x{window.Handle:X}, gpu={window.AdapterName}");
 
             // Same thread as the dock, so both windows are served by the one message loop below
             // and neither needs to be thread-safe with respect to the other.
             tray = new TrayIcon();
-            tray.VisibilityToggled += dock.SetVisible;
-            tray.ExitRequested += () => Win32.PostMessageW(dock.Handle, Win32.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
+            tray.VisibilityToggled += window.SetVisible;
+
+            // Ending the loop directly rather than closing the dock's window. The dock lives on
+            // the desktop, so Explorer owns its lifetime and it is simply absent after a restart -
+            // and posting WM_CLOSE to a handle that no longer names anything is how this used to
+            // leave a process with a tray icon, no window, and no way out but Task Manager.
+            tray.ExitRequested += () => Win32.PostQuitMessage(0);
+            tray.ShellRestarted += () => RebuildDock(window);
             tray.Create();
             Note("Tray icon added");
 
             if (exitAfterSeconds > 0)
-                ScheduleExit(dock.Handle, exitAfterSeconds);
+                ScheduleExit(tray.Handle, exitAfterSeconds);
 
             PumpMessages();
             return 0;
@@ -108,13 +118,35 @@ internal static class Program
         return $"pump: {_waitingTicks * toMs:N0}ms waiting in GetMessage, {_dispatchTicks * toMs:N0}ms dispatching";
     }
 
+    /// <summary>
+    /// Puts the dock back after Explorer restarted.
+    ///
+    /// Failure here is survivable and must stay that way. This runs inside a window procedure
+    /// called from native code, so an exception escaping it would tear the process down - and it
+    /// would take the tray icon with it, which is the one thing still working at that point and
+    /// the user's only way to close the app cleanly.
+    /// </summary>
+    private static void RebuildDock(DockWindow dock)
+    {
+        try
+        {
+            dock.Recreate();
+            Note($"Explorer restarted; dock rebuilt, hwnd=0x{dock.Handle:X}");
+        }
+        catch (Exception ex)
+        {
+            Note($"Explorer restarted; dock rebuild failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
     /// <summary>Used by the screenshot harness so a test run cannot leave a window behind.</summary>
     private static void ScheduleExit(IntPtr hwnd, int seconds)
     {
         _ = Task.Run(async () =>
         {
             await Task.Delay(TimeSpan.FromSeconds(seconds)).ConfigureAwait(false);
-            // DefWindowProc turns this into DestroyWindow -> WM_DESTROY -> PostQuitMessage.
+            // Aimed at the tray window, which handles WM_CLOSE by ending the message loop. The
+            // dock's window is not a reliable target: it may have been rebuilt, or be missing.
             Win32.PostMessageW(hwnd, Win32.WM_CLOSE, IntPtr.Zero, IntPtr.Zero);
         });
     }

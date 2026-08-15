@@ -121,7 +121,6 @@ internal static class Win32
     public const uint WM_CLOSE = 0x0010;
     public const uint WM_NULL = 0x0000;
     public const uint WM_QUIT = 0x0012;
-    public const uint WM_LBUTTONDBLCLK = 0x0203;
     public const uint WM_ERASEBKGND = 0x0014;
     public const uint WM_NCHITTEST = 0x0084;
     public const uint WM_MOUSEMOVE = 0x0200;
@@ -143,9 +142,10 @@ internal static class Win32
     /// <summary>Posted from the launcher's pool thread to end a bounce on the UI thread.</summary>
     public const uint WM_APP_BOUNCE_DONE = WM_APP + 2;
 
-    // Virtual keys used by the debug hotkeys.
+    // Virtual keys used by the debug hotkeys. There is deliberately no quit hotkey: exit is the
+    // tray menu's job, and a global Ctrl+Alt+Q is a key combination taken away from every other
+    // application for a command with a perfectly good home.
     public const uint VK_B = 0x42;
-    public const uint VK_Q = 0x51;
     public const uint VK_S = 0x53;
 
     // WM_NCHITTEST results
@@ -290,6 +290,16 @@ internal static class Win32
 
     [DllImport("user32.dll")]
     public static extern bool DestroyWindow(IntPtr hWnd);
+
+    /// <summary>
+    /// Whether a handle still names a live window.
+    ///
+    /// Needed because an Explorer restart destroys the dock's HWND from outside this process,
+    /// leaving a field holding a handle that looks fine and refers to nothing. Handle values are
+    /// recycled, so this is only ever asked about a window we are about to stop using anyway.
+    /// </summary>
+    [DllImport("user32.dll")]
+    public static extern bool IsWindow(IntPtr hWnd);
 
     [DllImport("user32.dll")]
     public static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);

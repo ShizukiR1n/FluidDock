@@ -3,14 +3,14 @@
 # Shared by TrayMenuTest and HideShowTest so there is one definition of "what the user does",
 # rather than two that drift apart.
 #
-# -DoubleClick uses the icon's double-click handler instead of the menu. Both reach the same
-# Toggle(), but only one of them is what the menu test exercises, so the other needs covering too.
+# The menu is the only route: the tray icon's double-click handler was removed, because that
+# gesture is reserved for opening the settings window once one exists.
 #
 # Kept ASCII-only on purpose: Windows PowerShell 5.1 parses .ps1 as the system ANSI code page
 # unless the file carries a UTF-8 BOM, so a Chinese literal here would be silently corrupted.
 # The show item is matched on its "Dock" substring, which survives either decoding.
 
-param([switch] $DoubleClick, [switch] $Exit)
+param([switch] $Exit)
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -23,18 +23,9 @@ using System.Runtime.InteropServices;
 public static class TT {
     [DllImport("user32.dll")] static extern void mouse_event(uint f, uint dx, uint dy, uint d, IntPtr e);
     [DllImport("user32.dll")] static extern void keybd_event(byte vk, byte scan, uint flags, IntPtr extra);
-    [DllImport("user32.dll")] static extern uint GetDoubleClickTime();
     public static void Left()  { mouse_event(0x0002,0,0,0,IntPtr.Zero); System.Threading.Thread.Sleep(60); mouse_event(0x0004,0,0,0,IntPtr.Zero); }
     public static void Right() { mouse_event(0x0008,0,0,0,IntPtr.Zero); System.Threading.Thread.Sleep(60); mouse_event(0x0010,0,0,0,IntPtr.Zero); }
     public static void Escape(){ keybd_event(0x1B,0,0,IntPtr.Zero); System.Threading.Thread.Sleep(40); keybd_event(0x1B,0,2,IntPtr.Zero); }
-
-    /// Two clicks inside the system double-click interval, so the shell reports WM_LBUTTONDBLCLK
-    /// rather than two singles.
-    public static void DoubleLeft() {
-        mouse_event(0x0002,0,0,0,IntPtr.Zero); mouse_event(0x0004,0,0,0,IntPtr.Zero);
-        System.Threading.Thread.Sleep((int)(GetDoubleClickTime() / 4));
-        mouse_event(0x0002,0,0,0,IntPtr.Zero); mouse_event(0x0004,0,0,0,IntPtr.Zero);
-    }
 
     [DllImport("user32.dll")] static extern bool EnumWindows(Proc cb, IntPtr p);
     delegate bool Proc(IntPtr h, IntPtr p);
@@ -106,12 +97,6 @@ try {
     $btn = & "$PSScriptRoot\TrayButtons.ps1" -OpenOverflow
     if (-not $btn.Found) { throw "tray icon not found: $($btn.Reason)" }
     Move-To $btn.X $btn.Y
-
-    if ($DoubleClick) {
-        [TT]::DoubleLeft()
-        Start-Sleep -Milliseconds 700
-        return
-    }
 
     [TT]::Right()
     Start-Sleep -Milliseconds 800

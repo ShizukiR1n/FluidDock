@@ -22,11 +22,11 @@ internal sealed class DockWindow : IDisposable
 {
     private const string ClassName = "FluidDockWindow";
 
-    public const int HotkeyQuit = 1;
     public const int HotkeyStallTest = 2;
     public const int HotkeyBounceTest = 3;
 
     private static readonly IntPtr TimerShrinkRegion = new(1);
+    private static readonly IntPtr TimerRejoinDesktop = new(2);
 
     /// <summary>
     /// How long the dock stays at full size after the last thing that needed the room ended.
@@ -36,6 +36,15 @@ internal sealed class DockWindow : IDisposable
     /// against a desktop the user is not currently dragging a selection across.
     /// </summary>
     private const uint RegionSettleMs = 500;
+
+    /// <summary>
+    /// How long to keep looking for a desktop to sink into, and how often. Ten seconds is
+    /// generous - the shell is usually ready within one or two - but giving up early costs the
+    /// user a dock that floats over their windows for the rest of the session, whereas waiting
+    /// costs a few seconds during which the dock is on screen and working regardless.
+    /// </summary>
+    private const uint RejoinIntervalMs = 500;
+    private const int RejoinAttempts = 20;
 
     private readonly string _configPath;
 
@@ -90,6 +99,17 @@ internal sealed class DockWindow : IDisposable
     private bool _hovered;
     private bool _tracking;
     private bool _testBouncing;
+
+    /// <summary>
+    /// Whether the user wants the dock on screen. Not the same as the window's actual state:
+    /// the window is shown and hidden in several places, and a rebuild - or a whole new window
+    /// after Explorer restarts - has to put back what the user chose rather than what the last
+    /// SetWindowPos happened to leave behind.
+    /// </summary>
+    private bool _visible = true;
+
+    /// <summary>Rejoin attempts left before settling for whatever desktop window exists.</summary>
+    private int _rejoinLeft;
 
     // Window size in client pixels, kept so the idle region can be clamped to it.
     private int _windowW;
@@ -146,6 +166,47 @@ internal sealed class DockWindow : IDisposable
         if (Win32.RegisterClassExW(ref wc) == 0)
             throw new InvalidOperationException($"RegisterClassEx failed: {Marshal.GetLastWin32Error()}");
 
+        OpenWindow(hInstance);
+
+        StartWatchingConfig();
+        WatchForeground();
+    }
+
+    /// <summary>
+    /// Builds a fresh window and visual tree after Explorer took the old one down with it.
+    ///
+    /// The dock is a child of Progman, so restarting Explorer destroys it and leaves the process
+    /// alive with nothing on screen and no way to draw. Everything not bound to the HWND is kept
+    /// deliberately: the Compositor, the surface factory and the D3D device behind it, the config
+    /// watcher and the foreground hook all outlive the window, and tearing them down would cost a
+    /// GPU device reset to solve a problem they do not have. Only the HWND and the
+    /// DesktopWindowTarget bound to it have to be replaced.
+    ///
+    /// The window class is not re-registered - it belongs to the process, not the window, and
+    /// survives DestroyWindow.
+    /// </summary>
+    public void Recreate()
+    {
+        ReleaseTree();
+
+        _target?.Dispose();
+        _target = null;
+
+        // Normally already gone, taken out from under us. Handled anyway so that calling this
+        // when the window is still alive is a rebuild rather than a leak.
+        if (_hwnd != IntPtr.Zero && Win32.IsWindow(_hwnd)) Win32.DestroyWindow(_hwnd);
+        _hwnd = IntPtr.Zero;
+        _desktop = IntPtr.Zero;
+        _hovered = false;
+        _tracking = false;
+        _layout = null;
+
+        OpenWindow(Win32.GetModuleHandleW(null));
+    }
+
+    /// <summary>Creates the HWND, binds a composition target to it, and puts the dock in it.</summary>
+    private void OpenWindow(IntPtr hInstance)
+    {
         // WS_EX_NOREDIRECTIONBITMAP: no GDI redirection surface, so the window has real
         // per-pixel alpha and Composition is the only thing painting it.
         uint exStyle = Win32.WS_EX_TOOLWINDOW | Win32.WS_EX_NOACTIVATE | Win32.WS_EX_NOREDIRECTIONBITMAP;
@@ -160,24 +221,21 @@ internal sealed class DockWindow : IDisposable
         if (_hwnd == IntPtr.Zero)
             throw new InvalidOperationException($"CreateWindowEx failed: {Marshal.GetLastWin32Error()}");
 
-        _compositor = new Compositor();
+        _compositor ??= new Compositor();
         _target = CompositorInterop.CreateDesktopWindowTarget(_compositor, _hwnd, _config.Layer == DockLayer.Top);
-        _surfaces = new SurfaceFactory(_compositor);
+        _surfaces ??= new SurfaceFactory(_compositor);
 
         // Reparent only after the composition target exists. The target binds to the HWND, and
         // creating one against a window that is already a child is the part with no guarantee
         // behind it - this way the risky ordering is avoided entirely.
+        _rejoinLeft = RejoinAttempts;
         if (_config.Layer == DockLayer.Desktop) JoinDesktop();
 
         Rebuild();
 
-        Win32.ShowWindow(_hwnd, Win32.SW_SHOWNOACTIVATE);
-        Win32.RegisterHotKey(_hwnd, HotkeyQuit, Win32.MOD_CONTROL | Win32.MOD_ALT | Win32.MOD_NOREPEAT, Win32.VK_Q);
+        Win32.ShowWindow(_hwnd, _visible ? Win32.SW_SHOWNOACTIVATE : Win32.SW_HIDE);
         Win32.RegisterHotKey(_hwnd, HotkeyStallTest, Win32.MOD_CONTROL | Win32.MOD_ALT | Win32.MOD_NOREPEAT, Win32.VK_S);
         Win32.RegisterHotKey(_hwnd, HotkeyBounceTest, Win32.MOD_CONTROL | Win32.MOD_ALT | Win32.MOD_NOREPEAT, Win32.VK_B);
-
-        StartWatchingConfig();
-        WatchForeground();
     }
 
     /// <summary>
@@ -454,9 +512,22 @@ internal sealed class DockWindow : IDisposable
     /// receiving clicks; application windows are above the desktop entirely, so they still
     /// cover it. If the shell is not laid out as expected we stay a normal window - a dock in
     /// the wrong z-order is a nuisance, a dock that refused to start is worse.
+    ///
+    /// The desktop is not always there to be joined at the moment we ask. TaskbarCreated arrives
+    /// while Explorer is still assembling itself, and launching at sign-in gets in earlier
+    /// still, so this waits for the icon view to exist before committing (see
+    /// DesktopLayer.Ready) and looks again on a timer until it does. Meanwhile the dock is an
+    /// ordinary window - on screen and usable, just not sunk in - which is the right thing to be
+    /// while waiting.
     /// </summary>
     private void JoinDesktop()
     {
+        if (!DesktopLayer.Ready() && _rejoinLeft > 0)
+        {
+            Win32.SetTimer(_hwnd, TimerRejoinDesktop, RejoinIntervalMs, IntPtr.Zero);
+            return;
+        }
+
         _desktop = DesktopLayer.Find();
         if (_desktop == IntPtr.Zero) return;
 
@@ -468,6 +539,11 @@ internal sealed class DockWindow : IDisposable
 
         Win32.SetWindowPos(_hwnd, Win32.HWND_TOP, 0, 0, 0, 0,
             Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE);
+
+        // Once parented, window coordinates mean the desktop's client space rather than the
+        // screen's. A join that lands after the tree was laid out has therefore invalidated the
+        // position the window was placed at, and has to place it again.
+        if (_layout is not null) PositionWindow(_windowW, _windowH);
     }
 
     private void PositionWindow(int width, int height)
@@ -491,7 +567,10 @@ internal sealed class DockWindow : IDisposable
         // Normal mode deliberately leaves the z-order alone. Forcing HWND_TOP would shove the
         // dock in front of whatever the user is working in every time the config reloads, and
         // HWND_BOTTOM would drop it behind the desktop itself, which hides it completely.
-        uint flags = Win32.SWP_NOACTIVATE | Win32.SWP_SHOWWINDOW;
+        // SWP_SHOWWINDOW only when the dock is meant to be on screen. Unconditionally, a config
+        // reload - or the rebuild after an Explorer restart - would drag a dock the user had
+        // hidden back into view while the tray menu still showed it as hidden.
+        uint flags = Win32.SWP_NOACTIVATE | (_visible ? Win32.SWP_SHOWWINDOW : 0);
         IntPtr insertAfter = IntPtr.Zero;
 
         switch (_config.Layer)
@@ -540,6 +619,12 @@ internal sealed class DockWindow : IDisposable
                     Win32.KillTimer(_hwnd, TimerShrinkRegion);
                     ShrinkRegion();
                 }
+                else if (wParam == TimerRejoinDesktop)
+                {
+                    Win32.KillTimer(_hwnd, TimerRejoinDesktop);
+                    _rejoinLeft--;
+                    JoinDesktop();
+                }
                 return IntPtr.Zero;
 
             case Win32.WM_MOUSEMOVE:
@@ -573,8 +658,11 @@ internal sealed class DockWindow : IDisposable
                 return IntPtr.Zero;
 
             case Win32.WM_DESTROY:
+                // Deliberately does not end the process. This window's death is not the app's:
+                // Explorer destroys it on every restart, and Recreate builds another. Exit runs
+                // through the tray window, which nothing outside this process can take away.
                 Win32.KillTimer(_hwnd, TimerShrinkRegion);
-                Win32.PostQuitMessage(0);
+                Win32.KillTimer(_hwnd, TimerRejoinDesktop);
                 return IntPtr.Zero;
         }
 
@@ -636,6 +724,7 @@ internal sealed class DockWindow : IDisposable
     /// </summary>
     public void SetVisible(bool visible)
     {
+        _visible = visible;
         if (!visible) SetHovered(false);
         Win32.ShowWindow(_hwnd, visible ? Win32.SW_SHOWNOACTIVATE : Win32.SW_HIDE);
         if (visible) ResyncHover();
@@ -769,10 +858,6 @@ internal sealed class DockWindow : IDisposable
     {
         switch (id)
         {
-            case HotkeyQuit:
-                Win32.PostQuitMessage(0);
-                break;
-
             case HotkeyStallTest:
                 // Proof of the architecture. Block this thread hard: any animation already in
                 // flight keeps running at full frame rate, because the compositor evaluates it
@@ -860,13 +945,14 @@ internal sealed class DockWindow : IDisposable
         _watcher?.Dispose();
         _reloadDebounce?.Dispose();
 
-        // Tree before factory: the surfaces were handed out by its graphics device.
+        // Tree before target before factory: the surfaces were handed out by the factory's
+        // graphics device, and the target holds the root the tree hangs from.
         ReleaseTree();
+        _target?.Dispose();
         _surfaces?.Dispose();
 
         if (_hwnd != IntPtr.Zero)
         {
-            Win32.UnregisterHotKey(_hwnd, HotkeyQuit);
             Win32.UnregisterHotKey(_hwnd, HotkeyStallTest);
             Win32.UnregisterHotKey(_hwnd, HotkeyBounceTest);
         }
