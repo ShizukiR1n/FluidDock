@@ -61,6 +61,7 @@ tools\Publish.ps1        # -> dist\FluidDock.exe，自包含单文件，约 95 M
 | `BounceTest.ps1` | 点击→启动→弹跳→停止的完整链路 |
 | `HideShowTest.ps1` | 托盘隐藏再显示后 Dock 仍然完好 |
 | `TrayMenuTest.ps1` | 托盘菜单两个命令都有效，退出会清理图标 |
+| `ExplorerRestartTest.ps1` | Explorer 重启后进程/Dock 窗口/托盘图标各自的死活，以及两条退出路径还灵不灵 |
 | `PackagingCost.ps1` | 四种打包方式的磁盘/内存/启动对比 |
 
 ### 写这些脚本时反复踩的坑
@@ -75,7 +76,21 @@ tools\Publish.ps1        # -> dist\FluidDock.exe，自包含单文件，约 95 M
 
 ## 已知限制
 
-- Dock 是 Progman 的子窗口，**Explorer 重启会连它一起销毁**，不会自己回来。托盘图标是独立顶层窗口，能活下来 —— 以后重建 Dock 就靠它。这条分支还没测过。
+- **Explorer 重启会把进程变成僵尸。** 已测（`tools\ExplorerRestartTest.ps1`），两次结果一致，比原先估计的严重得多：
+
+  | | 结果 |
+  |---|---|
+  | 进程 | 存活，消息循环照常跑 |
+  | Dock 窗口 | 被销毁，不会重建 |
+  | `WM_DESTROY` → `PostQuitMessage` | **没送达** —— 进程不知道自己的窗口没了 |
+  | 托盘图标 | 通过 `TaskbarCreated` 正确重新注册 ✓ |
+  | 托盘菜单 | 能打开，且「显示 Dock」仍然打勾 —— 在说谎 |
+  | 点「显示 Dock」 | 无反应（`ShowWindow` 作用在已销毁的句柄上） |
+  | 点「退出」 | 无反应（`PostMessageW` 发往已销毁的 Dock 窗口） |
+  | `Ctrl+Alt+Q` | 无反应（热键注册在 Dock 窗口上，随它一起没了） |
+  | 唯一出路 | 任务管理器 |
+
+  根因：`Program.cs` 把退出路径拴在 Dock 窗口上（`tray.ExitRequested` 往 `dock.Handle` 发 `WM_CLOSE`），热键也注册在同一个窗口上，而那个窗口的生命周期由 Explorer 决定。整个设计里唯一按预期工作的是托盘窗口独立存活并重新注册图标 —— 重建 Dock 的钩子就在那儿，只是还没接上。
 - 静止时图标之间约 12px 的间隙在窗口区域之外，光标正好从间隙进入时要碰到图标才会触发放大。
 - 弹跳期间区域完全打开，此刻恰好在拖框选会看到空洞。
 - 启动弹跳大部分时候被拉起的应用窗口盖住了。

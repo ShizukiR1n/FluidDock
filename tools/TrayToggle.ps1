@@ -10,7 +10,7 @@
 # unless the file carries a UTF-8 BOM, so a Chinese literal here would be silently corrupted.
 # The show item is matched on its "Dock" substring, which survives either decoding.
 
-param([switch] $DoubleClick)
+param([switch] $DoubleClick, [switch] $Exit)
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -115,8 +115,15 @@ try {
 
     [TT]::Right()
     Start-Sleep -Milliseconds 800
-    $item = @([TT]::Items()) | Where-Object { $_.Text -like "*Dock*" } | Select-Object -First 1
-    if (-not $item) { throw "no show/hide item in the tray menu" }
+
+    # The exit item is identified as "the selectable one that is not the Dock item" rather than by
+    # its label, which is Chinese and would not survive this file being parsed as ANSI.
+    $item = if ($Exit) {
+        @([TT]::Items()) | Where-Object { $_.Text -notlike "*Dock*" } | Select-Object -First 1
+    } else {
+        @([TT]::Items()) | Where-Object { $_.Text -like "*Dock*" } | Select-Object -First 1
+    }
+    if (-not $item) { throw "no matching item in the tray menu" }
     Move-To $item.X $item.Y
     [TT]::Left()
     Start-Sleep -Milliseconds 800
