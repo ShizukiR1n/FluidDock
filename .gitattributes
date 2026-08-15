@@ -1,0 +1,7 @@
+# Text gets normalised to LF in the repo; binaries must not be touched at all. The .ico in
+# particular is a hand-built multi-size file and any line-ending rewriting would corrupt it.
+* text=auto
+
+*.ico binary
+*.png binary
+*.exe binary

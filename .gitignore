@@ -1,0 +1,15 @@
+# Build output.
+bin/
+obj/
+
+# The shippable package. The exe is ~95 MB and lives on the GitHub Release for its tag instead;
+# dist\config and dist\assets are the running user's own data, not source. Nothing here is
+# needed to rebuild - tools\Publish.ps1 regenerates all of it, and DockConfig seeds a fresh
+# dock.json from whatever is actually installed on the machine.
+dist/
+
+# Scratch captures the test tools leave behind.
+_*.png
+
+# Written only at process exit, and always from the previous run.
+*.log
