@@ -8,8 +8,10 @@ obj/
 # dock.json from whatever is actually installed on the machine.
 dist/
 
-# Scratch captures the test tools leave behind.
+# Scratch captures the test tools leave behind, plus the stdout/stderr of tools started
+# detached - the harness cuts long foreground calls, so anything slow writes to a file.
 _*.png
+_*.err
 
 # Written only at process exit, and always from the previous run.
 *.log

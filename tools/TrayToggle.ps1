@@ -1,16 +1,16 @@
-# Toggles the dock's visibility through the tray, the way a user would.
+# Drives the tray menu the way a user would.
 #
-# Shared by TrayMenuTest and HideShowTest so there is one definition of "what the user does",
-# rather than two that drift apart.
+# Shared by TrayMenuTest, HideShowTest and MenuTest so there is one definition of "what the user
+# does", rather than three that drift apart.
 #
-# The menu is the only route: the tray icon's double-click handler was removed, because that
-# gesture is reserved for opening the settings window once one exists.
-#
-# Kept ASCII-only on purpose: Windows PowerShell 5.1 parses .ps1 as the system ANSI code page
-# unless the file carries a UTF-8 BOM, so a Chinese literal here would be silently corrupted.
-# The show item is matched on its "Dock" substring, which survives either decoding.
+# Items are picked by command id, not by label. There are now two items that are not the Dock
+# one - the settings panel and exit - so "the selectable item that is not Dock" no longer names
+# anything in particular, and matching on the Chinese text is not an option either: Windows
+# PowerShell 5.1 parses .ps1 as the system ANSI code page unless the file carries a UTF-8 BOM,
+# so a Chinese literal in this file would be silently corrupted before it was ever compared.
+# The ids are TrayIcon.cs's CmdMenu / CmdShowDock / CmdExit.
 
-param([switch] $Exit)
+param([switch] $Exit, [switch] $Menu)
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -37,9 +37,10 @@ public static class TT {
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetMenuStringW(IntPtr m, uint i, StringBuilder s, int n, uint f);
     [DllImport("user32.dll")] static extern uint GetMenuState(IntPtr m, uint i, uint f);
     [DllImport("user32.dll")] static extern bool GetMenuItemRect(IntPtr h, IntPtr m, uint i, out RECT r);
+    [DllImport("user32.dll")] static extern uint GetMenuItemID(IntPtr m, int i);
 
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; }
-    public struct Item { public string Text; public bool Checked; public int X, Y; }
+    public struct Item { public string Text; public bool Checked; public int Id; public int X, Y; }
 
     /// The popup menu that is actually on screen. Menu windows are cached and reused, so several
     /// exist at once and the first in z-order is usually a stale one parked at 0,0.
@@ -74,6 +75,7 @@ public static class TT {
             RECT r;
             if (!GetMenuItemRect(wnd, menu, i, out r)) continue;
             list.Add(new Item { Text = sb.ToString(), Checked = (state & 0x0008) != 0,
+                                Id = (int)GetMenuItemID(menu, (int)i),
                                 X = (r.L + r.R) / 2, Y = (r.T + r.B) / 2 });
         }
         return list.ToArray();
@@ -101,14 +103,9 @@ try {
     [TT]::Right()
     Start-Sleep -Milliseconds 800
 
-    # The exit item is identified as "the selectable one that is not the Dock item" rather than by
-    # its label, which is Chinese and would not survive this file being parsed as ANSI.
-    $item = if ($Exit) {
-        @([TT]::Items()) | Where-Object { $_.Text -notlike "*Dock*" } | Select-Object -First 1
-    } else {
-        @([TT]::Items()) | Where-Object { $_.Text -like "*Dock*" } | Select-Object -First 1
-    }
-    if (-not $item) { throw "no matching item in the tray menu" }
+    $wanted = if ($Exit) { 3 } elseif ($Menu) { 1 } else { 2 }
+    $item = @([TT]::Items()) | Where-Object { $_.Id -eq $wanted } | Select-Object -First 1
+    if (-not $item) { throw "no item with command id $wanted in the tray menu" }
     Move-To $item.X $item.Y
     [TT]::Left()
     Start-Sleep -Milliseconds 800

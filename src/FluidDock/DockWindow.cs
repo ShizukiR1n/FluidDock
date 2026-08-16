@@ -3,7 +3,6 @@ using System.Runtime.InteropServices;
 using FluidDock.Graphics;
 using FluidDock.Native;
 using FluidDock.Visuals;
-using Windows.UI;
 using Windows.UI.Composition;
 using Windows.UI.Composition.Desktop;
 
@@ -46,6 +45,7 @@ internal sealed class DockWindow : IDisposable
     private const uint RejoinIntervalMs = 500;
     private const int RejoinAttempts = 20;
 
+    private readonly CompositionHost _host;
     private readonly string _configPath;
 
     private WndProc? _wndProc;
@@ -87,10 +87,6 @@ internal sealed class DockWindow : IDisposable
     // recomputed on demand because MaxRunWidth solves by sweeping the cursor across the dock -
     // fine once at startup, not fine inside a hit test that runs on every mouse message.
     private float _centerX;
-    private float _pillLeft;
-    private float _pillRight;
-    private float _pillTop;
-    private float _pillBottom;
     private float _iconBottom;
     private float _hotTop;
     private float _restRunWidth;
@@ -139,8 +135,9 @@ internal sealed class DockWindow : IDisposable
     /// <summary>The GPU the icon rasteriser landed on. Worth logging: see SurfaceFactory.</summary>
     public string AdapterName => _surfaces?.AdapterName ?? "(none)";
 
-    public DockWindow(string configPath)
+    public DockWindow(CompositionHost host, string configPath)
     {
+        _host = host;
         _configPath = configPath;
     }
 
@@ -221,9 +218,12 @@ internal sealed class DockWindow : IDisposable
         if (_hwnd == IntPtr.Zero)
             throw new InvalidOperationException($"CreateWindowEx failed: {Marshal.GetLastWin32Error()}");
 
-        _compositor ??= new Compositor();
+        // Borrowed, not owned. The settings panel draws from the same pair, and both outlive any
+        // one window - which is what makes an Explorer restart a matter of rebuilding an HWND
+        // rather than resetting a GPU device.
+        _compositor = _host.Compositor;
         _target = CompositorInterop.CreateDesktopWindowTarget(_compositor, _hwnd, _config.Layer == DockLayer.Top);
-        _surfaces ??= new SurfaceFactory(_compositor);
+        _surfaces = _host.Surfaces;
 
         // Reparent only after the composition target exists. The target binds to the HWND, and
         // creating one against a window that is already a child is the part with no guarantee
@@ -251,6 +251,16 @@ internal sealed class DockWindow : IDisposable
     /// </summary>
     private void WatchForeground()
     {
+        // Idempotent, because the layer is settable at runtime and this has to be able to run
+        // again after a change - installing a second hook rather than replacing the first would
+        // leave the dock raising itself twice per desktop click, forever.
+        if (_foregroundHookHandle != IntPtr.Zero)
+        {
+            Win32.UnhookWinEvent(_foregroundHookHandle);
+            _foregroundHookHandle = IntPtr.Zero;
+            _foregroundHook = null;
+        }
+
         if (_config.Layer != DockLayer.Normal) return;
 
         _foregroundHook = (_, _, hwnd, idObject, _, _, _) =>
@@ -287,15 +297,13 @@ internal sealed class DockWindow : IDisposable
         ReleaseTree();
 
         int count = _config.Items.Count;
-        float pillTextureWidth = _metrics.PillTextureWidth(count);
-        float pillWidth = _metrics.PillWidth(count);
-        float pillHeight = _metrics.PillHeight;
 
         _restRunWidth = _metrics.RestRunWidth(count);
         _maxRunWidth = _metrics.MaxRunWidth(count);
 
-        int windowW = (int)MathF.Ceiling(pillTextureWidth + DockMetrics.ShadowMargin * 2f);
-        int windowH = (int)MathF.Ceiling(_metrics.TopOverflow + pillHeight + DockMetrics.ShadowMargin);
+        int windowW = (int)MathF.Ceiling(_maxRunWidth + DockMetrics.EdgeSlack * 2f);
+        int windowH = (int)MathF.Ceiling(
+            _metrics.TopOverflow + _metrics.IconSize + DockMetrics.EdgeSlack);
         (_windowW, _windowH) = (windowW, windowH);
 
         // The region is in client coordinates, so a resize would leave a stale shape clipping the
@@ -305,16 +313,8 @@ internal sealed class DockWindow : IDisposable
         _bounceCount = 0;
 
         _centerX = windowW / 2f;
-        _pillBottom = windowH - DockMetrics.ShadowMargin;
-        _pillTop = _pillBottom - pillHeight;
-        _pillLeft = _centerX - pillWidth / 2f;
-        _pillRight = _centerX + pillWidth / 2f;
-        _hotTop = _pillTop - _metrics.TopOverflow;
-
-        // With a pill the icons sit inside it, inset by the padding. Without one there is nothing
-        // to sit inside, so they take the pill's place against the screen edge and ScreenMargin
-        // means what its name says - the gap between the icons and the bottom of the work area.
-        _iconBottom = _config.Appearance.ShowPill ? _pillBottom - _metrics.PaddingY : _pillBottom;
+        _iconBottom = windowH - DockMetrics.EdgeSlack;
+        _hotTop = _iconBottom - _metrics.IconSize - _metrics.TopOverflow;
 
         PositionWindow(windowW, windowH);
 
@@ -325,9 +325,6 @@ internal sealed class DockWindow : IDisposable
         _layout = new Layout(_metrics, count, _centerX);
         _magnification = new MagnificationEngine(_compositor, _metrics, _layout);
         _bounce ??= new BounceAnimator(_compositor, _metrics);
-
-        if (_config.Appearance.ShowPill)
-            BuildPill(root, pillTextureWidth, pillWidth, pillHeight, _centerX);
 
         BuildIcons(root, count);
         ResyncHover();
@@ -400,67 +397,17 @@ internal sealed class DockWindow : IDisposable
     ///
     /// It grows once hovered - upward to cover icons standing proud of their rest height, and
     /// outward because magnification pushes the end icons past the rest run. Shrinking it again
-    /// on leave is what keeps the dock from silently claiming a band of empty desktop: with the
-    /// pill hidden there is nothing drawn to tell the user where that dead zone would be.
+    /// on leave is what keeps the dock from silently claiming a band of empty desktop: there is
+    /// nothing drawn between the icons to tell the user where that dead zone would be.
     /// </summary>
     private bool Contains(float x, float y)
     {
-        float left, right, top, bottom;
+        float width = _hovered ? _maxRunWidth : _restRunWidth;
+        float left = _centerX - width / 2f;
+        float right = _centerX + width / 2f;
+        float top = _hovered ? _hotTop : _iconBottom - _metrics.IconSize;
 
-        if (_config.Appearance.ShowPill)
-        {
-            (left, right) = (_pillLeft, _pillRight);
-            (top, bottom) = (_hovered ? _hotTop : _pillTop, _pillBottom);
-        }
-        else
-        {
-            float width = _hovered ? _maxRunWidth : _restRunWidth;
-            (left, right) = (_centerX - width / 2f, _centerX + width / 2f);
-            (top, bottom) = (_hovered ? _hotTop : _iconBottom - _metrics.IconSize, _iconBottom);
-        }
-
-        return x >= left && x <= right && y >= top && y <= bottom;
-    }
-
-    private void BuildPill(ContainerVisual root, float textureWidth, float width, float height, float centerX)
-    {
-        if (_compositor is null || _surfaces is null) return;
-
-        using System.Drawing.Bitmap texture = PillTexture.Create(
-            (int)MathF.Ceiling(textureWidth),
-            (int)MathF.Ceiling(height),
-            _metrics.CornerRadius,
-            _config.Appearance);
-
-        CompositionDrawingSurface surface = Own(_surfaces.CreateSurface(texture));
-
-        // Nine-grid so the corners keep their radius if the pill is configured to animate width.
-        // Ownership is taken in dependency order - source before the brush that reads it - so
-        // that releasing newest first never closes something still in use.
-        CompositionSurfaceBrush source = Own(_compositor.CreateSurfaceBrush(surface));
-        CompositionNineGridBrush brush = Own(_compositor.CreateNineGridBrush());
-        brush.Source = source;
-        brush.SetInsets(_metrics.CornerRadius + 2f);
-
-        SpriteVisual pill = Own(_compositor.CreateSpriteVisual());
-        pill.Size = new Vector2(width, height);
-        pill.Offset = new Vector3(centerX - width / 2f, _pillTop, 0f);
-        pill.Brush = brush;
-
-        // The texture's own alpha is the shadow's shape, so the shadow follows the rounded
-        // corners instead of squaring off at the visual's bounds.
-        DropShadow shadow = Own(_compositor.CreateDropShadow());
-        shadow.BlurRadius = _config.Appearance.ShadowBlur;
-        shadow.Opacity = _config.Appearance.ShadowOpacity;
-        shadow.Offset = new Vector3(0f, _config.Appearance.ShadowOffsetY, 0f);
-        shadow.Color = Color.FromArgb(255, 0, 0, 0);
-        shadow.Mask = brush;
-        pill.Shadow = shadow;
-
-        root.Children.InsertAtTop(pill);
-
-        if (_metrics.PillGrowsWithIcons)
-            _magnification?.AttachPill(pill);
+        return x >= left && x <= right && y >= top && y <= _iconBottom;
     }
 
     private void BuildIcons(ContainerVisual root, int count)
@@ -490,7 +437,7 @@ internal sealed class DockWindow : IDisposable
             outer.Offset = new Vector3(0f, iconTop, 0f);
 
             // Inner: scale and bounce. CenterPoint sits on the bottom edge so growth pushes the
-            // icon upward out of the pill rather than expanding through its floor.
+            // icon upward, away from the screen edge, rather than down through it.
             SpriteVisual inner = Own(_compositor.CreateSpriteVisual());
             inner.Size = new Vector2(_metrics.IconSize, _metrics.IconSize);
             inner.CenterPoint = new Vector3(_metrics.IconSize / 2f, _metrics.IconSize, 0f);
@@ -551,8 +498,8 @@ internal sealed class DockWindow : IDisposable
         RECT work = Win32.GetWorkArea();
         int x = work.Left + (work.Width - width) / 2;
 
-        // Anchor the icon row's bottom edge, not the window's - the window carries shadow margin.
-        int y = (int)(work.Bottom - _metrics.ScreenMargin - _pillBottom);
+        // Anchor the icon row's bottom edge, not the window's - the window carries edge slack.
+        int y = (int)(work.Bottom - _metrics.ScreenMargin - _iconBottom);
 
         // Once parented, SetWindowPos speaks the desktop's client coordinates rather than the
         // screen's. They coincide on a single monitor at the origin and diverge the moment a
@@ -912,10 +859,25 @@ internal sealed class DockWindow : IDisposable
     {
         try
         {
+            DockLayer previous = _config.Layer;
+
             _config = DockConfig.Load(_configPath);
             _metrics = _config.Metrics.ToMetrics();
             _hovered = false;
             _tracking = false;
+
+            // The layer is the one setting a rebuild cannot deliver. It decides the window's
+            // extended styles and whether the window is a child of the desktop, and both are
+            // fixed at CreateWindowEx - so changing it means a new window, not a new tree. This
+            // path exists because the settings panel offers the layer as a control, and a
+            // control that needs the user to restart the app is a control that lies.
+            if (_config.Layer != previous)
+            {
+                Recreate();
+                WatchForeground();
+                return;
+            }
+
             Rebuild();
         }
         catch (Exception)
@@ -945,11 +907,10 @@ internal sealed class DockWindow : IDisposable
         _watcher?.Dispose();
         _reloadDebounce?.Dispose();
 
-        // Tree before target before factory: the surfaces were handed out by the factory's
-        // graphics device, and the target holds the root the tree hangs from.
+        // Tree before target: the target holds the root the tree hangs from. The surface factory
+        // is not closed here - it belongs to the CompositionHost, which the panel also draws from.
         ReleaseTree();
         _target?.Dispose();
-        _surfaces?.Dispose();
 
         if (_hwnd != IntPtr.Zero)
         {

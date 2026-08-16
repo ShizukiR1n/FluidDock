@@ -115,6 +115,10 @@ internal static class Win32
     // Messages
     public const uint WM_DESTROY = 0x0002;
     public const uint WM_SIZE = 0x0005;
+    public const uint WM_ACTIVATE = 0x0006;
+    public const uint WM_KEYDOWN = 0x0100;
+    public const uint WM_MOUSEWHEEL = 0x020A;
+    public const uint WM_CAPTURECHANGED = 0x0215;
     public const uint WM_SYSCOMMAND = 0x0112;
     public const int SC_MINIMIZE = 0xF020;
     public const int SIZE_MINIMIZED = 1;
@@ -126,6 +130,12 @@ internal static class Win32
     public const uint WM_MOUSEMOVE = 0x0200;
     public const uint WM_LBUTTONDOWN = 0x0201;
     public const uint WM_LBUTTONUP = 0x0202;
+
+    /// <summary>
+    /// Only ever seen as the lParam of a tray callback. The shell decides what counts as a
+    /// double-click and reports it; the window's class style has no say in it.
+    /// </summary>
+    public const uint WM_LBUTTONDBLCLK = 0x0203;
     public const uint WM_RBUTTONUP = 0x0205;
     public const uint WM_MOUSELEAVE = 0x02A3;
     public const uint WM_MOUSEACTIVATE = 0x0021;
@@ -142,11 +152,26 @@ internal static class Win32
     /// <summary>Posted from the launcher's pool thread to end a bounce on the UI thread.</summary>
     public const uint WM_APP_BOUNCE_DONE = WM_APP + 2;
 
+    /// <summary>
+    /// Posted by the settings panel to itself, so an action that opens a modal dialog runs after
+    /// the mouse message that asked for it has finished - and not inside it, holding the capture.
+    /// </summary>
+    public const uint WM_APP_MENU_RUN = WM_APP + 4;
+
     // Virtual keys used by the debug hotkeys. There is deliberately no quit hotkey: exit is the
     // tray menu's job, and a global Ctrl+Alt+Q is a key combination taken away from every other
     // application for a command with a perfectly good home.
     public const uint VK_B = 0x42;
     public const uint VK_S = 0x53;
+
+    /// <summary>Dismisses the settings panel. Not a hotkey - only read while the panel has focus.</summary>
+    public const int VK_ESCAPE = 0x1B;
+
+    /// <summary>WM_ACTIVATE's low word when the window is losing activation.</summary>
+    public const int WA_INACTIVE = 0;
+
+    /// <summary>One notch of a mouse wheel, in the units WM_MOUSEWHEEL reports.</summary>
+    public const int WHEEL_DELTA = 120;
 
     // WM_NCHITTEST results
     public const int HTTRANSPARENT = -1;
@@ -171,6 +196,7 @@ internal static class Win32
 
     // ShowWindow
     public const int SW_SHOWNOACTIVATE = 4;
+    public const int SW_SHOW = 5;
     public const int SW_HIDE = 0;
 
     // Shell_NotifyIcon
@@ -328,6 +354,22 @@ internal static class Win32
     [DllImport("user32.dll")]
     public static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT lpEventTrack);
 
+    /// <summary>
+    /// Routes every mouse message to one window until released.
+    ///
+    /// A slider needs this. Without capture, dragging the knob past the edge of the panel hands
+    /// the mouse to whatever is underneath, and the drag ends wherever the pointer happened to
+    /// leave - so a fast throw sets the value to a number the user never aimed at.
+    /// </summary>
+    [DllImport("user32.dll")]
+    public static extern IntPtr SetCapture(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    public static extern bool ReleaseCapture();
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr GetCapture();
+
     [DllImport("user32.dll")]
     public static extern bool GetCursorPos(out POINT lpPoint);
 
@@ -396,6 +438,9 @@ internal static class Win32
 
     public static int GET_X_LPARAM(IntPtr lParam) => unchecked((short)(long)lParam);
     public static int GET_Y_LPARAM(IntPtr lParam) => unchecked((short)((long)lParam >> 16));
+
+    /// <summary>Wheel travel, in WHEEL_DELTA units. Signed: the high word is a short, not a ushort.</summary>
+    public static int GET_WHEEL_DELTA_WPARAM(IntPtr wParam) => unchecked((short)((long)wParam >> 16));
 
     /// <summary>
     /// Applies the DWM blur that shows through wherever our composition content is translucent.

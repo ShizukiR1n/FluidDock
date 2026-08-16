@@ -1,8 +1,8 @@
 # End-to-end launch test: click an icon, watch the bounce, watch it stop.
 #
-# Measures a small box strictly inside the pill rather than the icon's silhouette against the
+# Measures a small box strictly inside the icon rather than the icon's silhouette against the
 # desktop. The launched app's own window lands wherever it likes and swamped a silhouette
-# measurement on the first attempt; the dock is topmost, so anything changing inside the pill
+# measurement on the first attempt; the dock is topmost, so anything changing inside that box
 # is the icon itself moving.
 
 param(

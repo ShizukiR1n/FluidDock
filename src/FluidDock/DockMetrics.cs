@@ -21,36 +21,32 @@ internal sealed class DockMetrics
     /// <summary>Magnification reach, measured in icon cells to either side.</summary>
     public float InfluenceCells { get; init; } = 2.5f;
 
-    public float PaddingX { get; init; } = 18f;
-    public float PaddingY { get; init; } = 10f;
-    public float CornerRadius { get; init; } = 20f;
-
-    /// <summary>Gap between the pill and the bottom of the work area.</summary>
+    /// <summary>Gap between the icons and the bottom of the work area.</summary>
     public float ScreenMargin { get; init; } = 12f;
 
     /// <summary>Peak height of the launch bounce.</summary>
     public float BounceHeight { get; init; } = 30f;
 
-    /// <summary>
-    /// false: the pill is built at its widest possible size and never changes, so icons
-    /// spread inside a container that holds still.
-    /// true: the pill tracks the icon run, which is what macOS actually does.
-    /// </summary>
-    public bool PillGrowsWithIcons { get; init; }
-
     public float Cell => IconSize + IconGap;
     public float Influence => InfluenceCells * Cell;
     public float MaxGrow => MaxScale - 1f;
-    public float PillHeight => IconSize + PaddingY * 2f;
 
     /// <summary>
-    /// Headroom above the pill for a magnified, mid-bounce icon. The icon grows upward from
+    /// Headroom above the icon row for a magnified, mid-bounce icon. The icon grows upward from
     /// its bottom edge, so only the extra height counts.
     /// </summary>
     public float TopOverflow => IconSize * MaxGrow + BounceHeight + 12f;
 
-    /// <summary>Room around the pill for its drop shadow.</summary>
-    public const float ShadowMargin = 28f;
+    /// <summary>
+    /// Slack between the widest the icons can get and the edge of the window.
+    ///
+    /// The window never resizes - moving an HWND is UI-thread work and would drag the animation
+    /// back onto the thread this whole design keeps it off - so it is built once at the size the
+    /// dock reaches when fully magnified, plus this. What it buys now that there is no backplate
+    /// to cast a shadow is room for the soft edges of an icon bitmap, and somewhere for a
+    /// rounding error to land that is not the outermost icon's last column of pixels.
+    /// </summary>
+    public const float EdgeSlack = 28f;
 
     // The expression language has no Pi constant we can rely on, so the literal is shared here
     // rather than written twice.
@@ -103,14 +99,4 @@ internal sealed class DockMetrics
 
         return widest;
     }
-
-    /// <summary>
-    /// Pill width. In fixed mode this is the worst case, so magnified icons always have room
-    /// and never spill past the rounded ends.
-    /// </summary>
-    public float PillWidth(int count) =>
-        (PillGrowsWithIcons ? RestRunWidth(count) : MaxRunWidth(count)) + PaddingX * 2f;
-
-    /// <summary>The pill is always painted at its widest; a nine-grid brush shrinks it if it animates.</summary>
-    public float PillTextureWidth(int count) => MaxRunWidth(count) + PaddingX * 2f;
 }

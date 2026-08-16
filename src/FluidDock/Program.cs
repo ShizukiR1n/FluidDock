@@ -1,4 +1,6 @@
 using System.Text;
+using FluidDock.Graphics;
+using FluidDock.Menu;
 using FluidDock.Native;
 
 namespace FluidDock;
@@ -30,7 +32,9 @@ internal static class Program
         using var single = new Mutex(true, @"Local\FluidDock.SingleInstance", out bool ours);
         if (!ours) return 0;
 
+        CompositionHost? graphics = null;
         DockWindow? dock = null;
+        MenuWindow? menu = null;
         TrayIcon? tray = null;
 
         try
@@ -41,30 +45,86 @@ internal static class Program
             CompositorInterop.EnsureDispatcherQueueOnCurrentThread();
             Note("Dispatcher queue ready");
 
+            // One Compositor and one D3D device for the process. Both windows below draw from
+            // these, and both outlive any single HWND.
+            var host = new CompositionHost();
+            graphics = host;
+
             // Named locally as well as stored in the outer variable: the handlers below close
             // over it, and a captured nullable is not something the compiler will let them
             // dereference. The outer one exists only so the finally block can still see it.
-            var window = new DockWindow(DockConfig.DefaultPath);
+            var window = new DockWindow(host, DockConfig.DefaultPath);
             dock = window;
             window.Create();
             Note($"Dock created, hwnd=0x{window.Handle:X}, gpu={window.AdapterName}");
 
-            // Same thread as the dock, so both windows are served by the one message loop below
-            // and neither needs to be thread-safe with respect to the other.
-            tray = new TrayIcon();
-            tray.VisibilityToggled += window.SetVisible;
+            // The panel edits this and saves; the dock's own file watcher picks the change up and
+            // rebuilds. Deliberately the same route a hand-edited config takes - see SettingsStore.
+            var settings = new SettingsStore(DockConfig.DefaultPath);
+
+            // Declared before the panel so the panel's rows can close over it, created before the
+            // dock is shown so the two never disagree about whether the dock is on screen. Its
+            // window is not made until further down; nothing here touches one.
+            var notify = new TrayIcon();
+            tray = notify;
+
+            // Named locally for the same reason `window` is: the closures below need something
+            // the compiler will let them dereference.
+            MenuWindow? built = null;
+            var items = new DockItems(
+                settings,
+                () => built?.Handle ?? IntPtr.Zero,
+                action => built?.Defer(action));
+
+            var panel = new MenuWindow(host, () => MenuDefinition.Build(new MenuContext
+            {
+                Store = settings,
+                Items = items,
+                Adapter = () => window.AdapterName,
+                DockVisible = () => notify.DockVisible,
+                SetDockVisible = visible =>
+                {
+                    notify.DockVisible = visible;
+                    window.SetVisible(visible);
+                },
+                OpenConfig = () => OpenConfig(settings.Path),
+                Quit = () => Win32.PostQuitMessage(0),
+            }));
+
+            built = panel;
+            menu = panel;
+
+            // An external edit means the item rows are holding entries from a list that has been
+            // replaced, so the panel has to be built again rather than merely refreshed. Reload
+            // says which happened; see SettingsStore.
+            panel.Opening += () =>
+            {
+                if (settings.Reload()) panel.Reload();
+            };
+
+            panel.Changed += settings.Save;
+            items.Changed += settings.Save;
+            items.StructureChanged += panel.Reload;
+
+            panel.Create();
+            Note($"Menu window created, hwnd=0x{panel.Handle:X}");
+
+            // Same thread as the dock, so all three windows are served by the one message loop
+            // below and none needs to be thread-safe with respect to the others.
+            notify.VisibilityToggled += window.SetVisible;
+            notify.MenuRequested += () => ShowMenu(panel);
 
             // Ending the loop directly rather than closing the dock's window. The dock lives on
             // the desktop, so Explorer owns its lifetime and it is simply absent after a restart -
             // and posting WM_CLOSE to a handle that no longer names anything is how this used to
             // leave a process with a tray icon, no window, and no way out but Task Manager.
-            tray.ExitRequested += () => Win32.PostQuitMessage(0);
-            tray.ShellRestarted += () => RebuildDock(window);
-            tray.Create();
+            notify.ExitRequested += () => Win32.PostQuitMessage(0);
+            notify.ShellRestarted += () => RebuildDock(window);
+            notify.Create();
             Note("Tray icon added");
 
             if (exitAfterSeconds > 0)
-                ScheduleExit(tray.Handle, exitAfterSeconds);
+                ScheduleExit(notify.Handle, exitAfterSeconds);
 
             PumpMessages();
             return 0;
@@ -84,7 +144,11 @@ internal static class Program
             // Before the dock, and unconditionally: an icon that is not explicitly removed stays
             // in the notification area as a dead entry until something makes the shell re-poll it.
             tray?.Dispose();
+            menu?.Dispose();
             dock?.Dispose();
+
+            // Last: it holds the D3D device the other two drew through.
+            graphics?.Dispose();
             Flush();
         }
     }
@@ -136,6 +200,52 @@ internal static class Program
         catch (Exception ex)
         {
             Note($"Explorer restarted; dock rebuild failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Opens or closes the settings panel.
+    ///
+    /// Wrapped for the same reason the Explorer rebuild is: this runs inside a window procedure
+    /// called from native code, so an exception escaping it would take the process down - and the
+    /// panel is by far the most elaborate thing in the app, built lazily on first use out of
+    /// fonts, bitmaps and GPU surfaces that a stripped Windows image might not all provide. A
+    /// dock that cannot open its settings is a nuisance; a dock that dies trying is not.
+    /// </summary>
+    private static void ShowMenu(MenuWindow panel)
+    {
+        try
+        {
+            panel.Toggle();
+        }
+        catch (Exception ex)
+        {
+            Note($"menu failed: {ex.GetType().Name}: {ex.Message}");
+            Note(ex.StackTrace ?? string.Empty);
+        }
+    }
+
+    /// <summary>
+    /// Reveals dock.json in Explorer, from the panel's "open config" row.
+    ///
+    /// Selected rather than opened: there is no telling what the user has .json associated with,
+    /// and a settings button that silently launches an unknown editor - or nothing at all - is
+    /// worse than one that shows them the file and lets them decide.
+    /// </summary>
+    private static void OpenConfig(string path)
+    {
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = "explorer.exe",
+                Arguments = $"/select,\"{path}\"",
+                UseShellExecute = false,
+            })?.Dispose();
+        }
+        catch (Exception ex)
+        {
+            Note($"open config failed: {ex.GetType().Name}: {ex.Message}");
         }
     }
 

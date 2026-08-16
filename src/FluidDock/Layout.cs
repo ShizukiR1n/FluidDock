@@ -16,20 +16,20 @@ internal sealed class Layout
     public int Count { get; }
 
     /// <summary>Window-space X of the centre the icon run is balanced around.</summary>
-    public float PillCenterX { get; }
+    public float CenterX { get; }
 
-    public Layout(DockMetrics metrics, int count, float pillCenterX)
+    public Layout(DockMetrics metrics, int count, float centerX)
     {
         _metrics = metrics;
         Count = count;
-        PillCenterX = pillCenterX;
+        CenterX = centerX;
         _scales = new float[count];
         _lefts = new float[count];
     }
 
     /// <summary>Window-space X of icon i's centre when nothing is magnified.</summary>
     public float RestCenterX(int i) =>
-        PillCenterX - _metrics.RestRunWidth(Count) / 2f + _metrics.RestCenter(i);
+        CenterX - _metrics.RestRunWidth(Count) / 2f + _metrics.RestCenter(i);
 
     /// <summary>
     /// Reproduces the compositor's layout for one cursor position and returns the icon under
@@ -63,7 +63,7 @@ internal sealed class Layout
             runWidth += _metrics.IconSize * _scales[i];
         }
 
-        float x = PillCenterX - runWidth / 2f;
+        float x = CenterX - runWidth / 2f;
         for (int i = 0; i < Count; i++)
         {
             _lefts[i] = x;

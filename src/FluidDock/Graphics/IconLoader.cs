@@ -17,18 +17,56 @@ internal static class IconLoader
 
     public static string AssetsDirectory => Path.Combine(AppContext.BaseDirectory, "assets", "icons");
 
-    public static Bitmap Load(DockItemConfig item)
+    public static Bitmap Load(DockItemConfig item) => Load(item, SourceSize);
+
+    /// <summary>
+    /// Resolves an entry's icon, rasterising from a source no larger than it has to.
+    ///
+    /// The dock asks for the full 256, because an icon it magnifies to 96 pixels is worth
+    /// resampling from the real asset. The settings panel draws the same icon at 26 and asks for
+    /// 64, which is four times less work per item on a list the user may add to all afternoon.
+    /// </summary>
+    public static Bitmap Load(DockItemConfig item, int sourceSize)
     {
-        Bitmap? bitmap = TryExplicitIcon(item.Icon) ?? TryAssetOverride(item) ?? TryShellIcon(item.Path);
+        Bitmap? bitmap = TryExplicitIcon(item.Icon, sourceSize)
+            ?? TryAssetOverride(item)
+            ?? TryShellIcon(item.Path, sourceSize);
+
         return bitmap ?? Placeholder(item);
     }
 
-    private static Bitmap? TryExplicitIcon(string? icon)
+    /// <summary>
+    /// The user's own choice of icon, which may not be an image file at all.
+    ///
+    /// Pointing at an .exe or .dll is allowed and means "use that program's icon" - the quickest
+    /// fix for an application whose own icon is the ugly one, and it needs no image editor.
+    /// </summary>
+    private static Bitmap? TryExplicitIcon(string? icon, int sourceSize)
     {
         if (string.IsNullOrWhiteSpace(icon)) return null;
 
         string path = Path.IsPathRooted(icon) ? icon : Path.Combine(AppContext.BaseDirectory, icon);
-        return LoadPng(path);
+        return LoadPng(path) ?? LoadIco(path, sourceSize) ?? TryShellIcon(path, sourceSize);
+    }
+
+    /// <summary>
+    /// An .ico holds several sizes, and GDI+'s Bitmap constructor picks one of the small ones.
+    /// Icon does let us ask, so this asks for the biggest and takes what it gets.
+    /// </summary>
+    private static Bitmap? LoadIco(string path, int sourceSize)
+    {
+        if (!File.Exists(path)) return null;
+
+        try
+        {
+            using var stream = new MemoryStream(File.ReadAllBytes(path));
+            using var icon = new Icon(stream, sourceSize, sourceSize);
+            return icon.ToBitmap();
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>Looks for assets/icons/&lt;exe name&gt;.png, so overriding an icon needs no config edit.</summary>
@@ -59,11 +97,11 @@ internal static class IconLoader
         }
     }
 
-    private static Bitmap? TryShellIcon(string path)
+    private static Bitmap? TryShellIcon(string path, int sourceSize)
     {
         if (string.IsNullOrWhiteSpace(path)) return null;
 
-        Bitmap? shell = Shell.GetHighResIcon(path, SourceSize);
+        Bitmap? shell = Shell.GetHighResIcon(path, sourceSize);
         if (shell is not null) return shell;
 
         try

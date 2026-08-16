@@ -20,8 +20,9 @@ internal sealed class TrayIcon : IDisposable
     private const string ClassName = "FluidDockTray";
     private const uint IconId = 1;
 
-    private const int CmdShowDock = 1;
-    private const int CmdExit = 2;
+    private const int CmdMenu = 1;
+    private const int CmdShowDock = 2;
+    private const int CmdExit = 3;
 
     private WndProc? _wndProc;
     private IntPtr _hwnd;
@@ -33,6 +34,10 @@ internal sealed class TrayIcon : IDisposable
     public event Action<bool>? VisibilityToggled;
 
     public event Action? ExitRequested;
+
+    /// <summary>Raised when the user picks the settings item. The panel decides whether that
+    /// means opening or closing - it is a toggle, and only it knows which it currently is.</summary>
+    public event Action? MenuRequested;
 
     /// <summary>
     /// Raised once Explorer has restarted and the icon is back in the rebuilt notification area.
@@ -145,10 +150,10 @@ internal sealed class TrayIcon : IDisposable
 
         if (msg == Win32.WM_APP_TRAY)
         {
-            // Left-click and double-click are deliberately unhandled. Double-click used to toggle
-            // the dock, which is a poor use of the gesture now that it is spoken for: it opens
-            // the settings window, once there is one.
+            // Left-click is deliberately unhandled: a single click on a tray icon is ambiguous,
+            // and the two things it could mean both have unambiguous homes in the menu.
             if ((uint)(long)lParam == Win32.WM_RBUTTONUP) ShowMenu();
+            else if ((uint)(long)lParam == Win32.WM_LBUTTONDBLCLK) MenuRequested?.Invoke();
             return IntPtr.Zero;
         }
 
@@ -170,6 +175,10 @@ internal sealed class TrayIcon : IDisposable
 
         try
         {
+            // Settings first, and separated: it is the item that opens something rather than
+            // doing something, and it is where every new feature is going to end up living.
+            Win32.AppendMenuW(menu, Win32.MF_STRING, new IntPtr(CmdMenu), "菜单…");
+            Win32.AppendMenuW(menu, Win32.MF_SEPARATOR, IntPtr.Zero, null);
             Win32.AppendMenuW(menu, Win32.MF_STRING | (DockVisible ? Win32.MF_CHECKED : 0),
                 new IntPtr(CmdShowDock), "显示 Dock");
             Win32.AppendMenuW(menu, Win32.MF_SEPARATOR, IntPtr.Zero, null);
@@ -189,6 +198,7 @@ internal sealed class TrayIcon : IDisposable
 
             switch (command)
             {
+                case CmdMenu: MenuRequested?.Invoke(); break;
                 case CmdShowDock: Toggle(); break;
                 case CmdExit: ExitRequested?.Invoke(); break;
             }

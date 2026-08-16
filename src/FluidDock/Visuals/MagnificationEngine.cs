@@ -52,7 +52,7 @@ internal sealed class MagnificationEngine : IDisposable
         _count = layout.Count;
 
         _input = compositor.CreatePropertySet();
-        _input.InsertScalar("CursorX", layout.PillCenterX);
+        _input.InsertScalar("CursorX", layout.CenterX);
         _input.InsertScalar("Magnify", 0f);
 
         _scales = compositor.CreatePropertySet();
@@ -147,7 +147,7 @@ internal sealed class MagnificationEngine : IDisposable
         ExpressionAnimation offsetExpression = _compositor.CreateExpressionAnimation(offset);
         offsetExpression.SetReferenceParameter("L", _prefix);
         offsetExpression.SetReferenceParameter("S", _scales);
-        offsetExpression.SetScalarParameter("PC", _layout.PillCenterX);
+        offsetExpression.SetScalarParameter("PC", _layout.CenterX);
         offsetExpression.SetScalarParameter("W", _metrics.IconSize);
         outer.StartAnimation("Offset.X", offsetExpression);
 
@@ -155,21 +155,6 @@ internal sealed class MagnificationEngine : IDisposable
             _compositor.CreateExpressionAnimation($"Vector3(S.S{index}, S.S{index}, 1)");
         scaleExpression.SetReferenceParameter("S", _scales);
         inner.StartAnimation("Scale", scaleExpression);
-    }
-
-    /// <summary>Drives the pill's own width from the same run width, when configured to grow.</summary>
-    public void AttachPill(Visual pill)
-    {
-        string size = $"Vector2(L.RunWidth + {F(_metrics.PaddingX * 2f)}, {F(_metrics.PillHeight)})";
-        ExpressionAnimation expression = _compositor.CreateExpressionAnimation(size);
-        expression.SetReferenceParameter("L", _prefix);
-        pill.StartAnimation("Size", expression);
-
-        ExpressionAnimation offset =
-            _compositor.CreateExpressionAnimation($"PC - (L.RunWidth + {F(_metrics.PaddingX * 2f)}) * 0.5");
-        offset.SetReferenceParameter("L", _prefix);
-        offset.SetScalarParameter("PC", _layout.PillCenterX);
-        pill.StartAnimation("Offset.X", offset);
     }
 
     /// <summary>

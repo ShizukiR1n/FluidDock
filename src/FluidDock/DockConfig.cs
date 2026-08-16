@@ -21,17 +21,8 @@ internal sealed class DockMetricsConfig
     public float IconGap { get; set; } = 14f;
     public float MaxScale { get; set; } = 2.0f;
     public float InfluenceCells { get; set; } = 2.5f;
-    public float PaddingX { get; set; } = 18f;
-    public float PaddingY { get; set; } = 10f;
-    public float CornerRadius { get; set; } = 20f;
     public float ScreenMargin { get; set; } = 12f;
     public float BounceHeight { get; set; } = 30f;
-
-    /// <summary>
-    /// Off by default: the pill holds a constant width and icons spread inside it.
-    /// Turn it on to get the macOS behaviour where the pill widens with the icons.
-    /// </summary>
-    public bool PillGrowsWithIcons { get; set; }
 
     public DockMetrics ToMetrics() => new()
     {
@@ -39,44 +30,9 @@ internal sealed class DockMetricsConfig
         IconGap = IconGap,
         MaxScale = MaxScale,
         InfluenceCells = InfluenceCells,
-        PaddingX = PaddingX,
-        PaddingY = PaddingY,
-        CornerRadius = CornerRadius,
         ScreenMargin = ScreenMargin,
         BounceHeight = BounceHeight,
-        PillGrowsWithIcons = PillGrowsWithIcons,
     };
-}
-
-internal sealed class DockAppearanceConfig
-{
-    /// <summary>
-    /// Whether to draw the rounded panel behind the icons. Off: the icons float directly on the
-    /// desktop and every setting below this one is inert.
-    ///
-    /// Kept as a switch rather than deleted because it costs one branch, and the pill is a
-    /// hundred-odd lines of texture work that would be tedious to reconstruct from scratch.
-    /// </summary>
-    public bool ShowPill { get; set; }
-
-    /// <summary>
-    /// Pill fill, #AARRGGBB. Without a real backdrop blur the alpha has to do more work than
-    /// it would on macOS - too low and the dock dissolves into a dark wallpaper.
-    /// </summary>
-    public string Tint { get; set; } = "#B22A2A2E";
-
-    /// <summary>Strength of the film grain that keeps the pill from reading as flat plastic. 0 disables.</summary>
-    public float Noise { get; set; } = 0.05f;
-
-    /// <summary>Opacity of the 1px highlight along the top edge.</summary>
-    public float TopHighlight { get; set; } = 0.30f;
-
-    /// <summary>Opacity of the hairline border.</summary>
-    public float Border { get; set; } = 0.16f;
-
-    public float ShadowOpacity { get; set; } = 0.55f;
-    public float ShadowBlur { get; set; } = 30f;
-    public float ShadowOffsetY { get; set; } = 8f;
 }
 
 internal enum DockLayer
@@ -107,7 +63,6 @@ internal sealed class DockConfig
     public DockLayer Layer { get; set; } = DockLayer.Desktop;
 
     public DockMetricsConfig Metrics { get; set; } = new();
-    public DockAppearanceConfig Appearance { get; set; } = new();
     public List<DockItemConfig> Items { get; set; } = new();
 
     private static readonly JsonSerializerOptions Options = new()

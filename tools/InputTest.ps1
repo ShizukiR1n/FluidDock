@@ -87,9 +87,10 @@ $saved = [System.Windows.Forms.Cursor]::Position
 $work = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
 
 # Icon centre line, derived the same way the dock derives it: work-area bottom, less the screen
-# margin, less the bottom padding, less half an icon. Guessing this from screen height put the
-# cursor below the pill, where every move is hit-tested away as transparent and never arrives.
-$y = [int]($work.Bottom - 12 - 10 - 48 / 2)
+# margin, less half an icon. The dock anchors the icon row's bottom edge there, not the window's.
+# Guessing this from screen height put the cursor below the icons, where every move is
+# hit-tested away as transparent and never arrives.
+$y = [int]($work.Bottom - 12 - 48 / 2)
 $mid = [int]($work.Width / 2)
 
 Start-Process $exe
