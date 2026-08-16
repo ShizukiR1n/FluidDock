@@ -29,6 +29,21 @@ internal sealed class MenuContext
 
     public required Action<bool> SetDockVisible { get; init; }
 
+    /// <summary>
+    /// Whether Windows launches the dock at sign-in. Live state again, and for a stronger reason
+    /// than the switch above: this one lives in the registry, where Task Manager can turn it off
+    /// behind our back.
+    /// </summary>
+    public required Func<bool> AutoStart { get; init; }
+
+    public required Action<bool> SetAutoStart { get; init; }
+
+    /// <summary>
+    /// Changes what the panel is made of, which means building it again. The one setting here
+    /// that the panel cannot apply by writing a number and letting something else notice.
+    /// </summary>
+    public required Action<PanelTheme> SetTheme { get; init; }
+
     public required Action OpenConfig { get; init; }
 
     public required Action Quit { get; init; }
@@ -60,10 +75,13 @@ internal static class MenuDefinition
     /// this is it, so a version on screen that disagrees with the tag is a typo rather than a
     /// build-configuration mystery.
     /// </summary>
-    public const string Version = "Beta Ver A1.5";
+    public const string Version = "正式版 Ver 0.5";
 
     /// <summary>Layer names, in the order <see cref="DockLayer"/> declares them.</summary>
     private static readonly string[] LayerNames = ["桌面", "普通", "置顶"];
+
+    /// <summary>Theme names, in the order <see cref="PanelTheme"/> declares them.</summary>
+    private static readonly string[] ThemeNames = ["深色", "液态玻璃"];
 
     public static MenuPage Build(MenuContext context)
     {
@@ -78,13 +96,33 @@ internal static class MenuDefinition
                 Apps(context),
                 AddButtons(context),
 
-                new MenuSection("外观")
+                // Both of these are switches on the program rather than on how it looks, and both
+                // read their state from somewhere outside dock.json - which is the thing they
+                // have in common and the reason they are not in 外观 with the sliders.
+                new MenuSection("常规")
                 {
                     Rows =
                     {
                         new ToggleRow("显示 Dock",
                             context.DockVisible,
                             context.SetDockVisible),
+                        new ToggleRow("开机自动启动",
+                            context.AutoStart,
+                            context.SetAutoStart),
+                    },
+                },
+
+                new MenuSection("外观")
+                {
+                    Rows =
+                    {
+                        // Rebuilds the panel rather than merely saving, because what a row is
+                        // made of is decided when it is built. Deferred inside Restyle for the
+                        // usual reason: this arrives from a pointer event, and the panel it would
+                        // destroy is the one dispatching it.
+                        new SegmentRow("主题", ThemeNames,
+                            () => (int)context.Store.Config.Theme,
+                            value => context.SetTheme((PanelTheme)value)),
                         new SliderRow("图标大小", 24f, 96f, 2f,
                             () => Metrics().IconSize,
                             value => Metrics().IconSize = value,

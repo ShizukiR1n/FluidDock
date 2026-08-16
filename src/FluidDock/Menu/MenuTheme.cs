@@ -120,33 +120,67 @@ internal static class MenuTheme
 
     // ---- Colours ----------------------------------------------------------------------------
 
-    /// <summary>Panel fill. Alpha carries the translucency; there is no backdrop blur behind it.</summary>
+    /// <summary>
+    /// Which of the two materials the panel is made of.
+    ///
+    /// Set once per build, from the config, by whoever is about to construct the page - see the
+    /// factory in Program.Main. A field rather than a parameter threaded through every row,
+    /// because a row is a description of a control and should not have to carry a palette it does
+    /// not read; and it is safe to be static because the panel is built on one thread and every
+    /// colour below is read during that build and never again.
+    /// </summary>
+    public static PanelTheme Panel { get; private set; } = PanelTheme.Dark;
+
+    public static void Use(PanelTheme theme) => Panel = theme;
+
+    private static bool Glass => Panel == PanelTheme.Glass;
+
+    /// <summary>Panel fill for the dark theme. Alpha carries the translucency; nothing is blurred behind it.</summary>
     public static readonly GdiColor PanelTint = GdiColor.FromArgb(238, 28, 28, 30);
+
+    /// <summary>
+    /// What the glass is tinted with, over the blurred capture behind it.
+    ///
+    /// Much thinner than the dark theme's fill - 62% rather than 93% - because there is real
+    /// content underneath that the whole point is to see. It has to be dark enough to keep white
+    /// text legible over a white window, which is the worst case and the one that decides this
+    /// number.
+    /// </summary>
+    public static readonly GdiColor GlassTint = GdiColor.FromArgb(158, 22, 22, 26);
+
     public const float PanelBorder = 0.14f;
     public const float PanelTopHighlight = 0.22f;
     public const float PanelNoise = 0.022f;
+
+    /// <summary>Less grain on glass: the blurred capture already carries texture of its own.</summary>
+    public const float GlassNoise = 0.014f;
+
     public const float PanelShadowOpacity = 0.62f;
     public const float PanelShadowBlur = 44f;
     public const float PanelShadowOffsetY = 12f;
 
-    public static readonly Color CardFill = Rgba(255, 255, 255, 0.055f);
-    public static readonly Color CardBorder = Rgba(255, 255, 255, 0.075f);
-    public static readonly Color Separator = Rgba(255, 255, 255, 0.085f);
+    // Glass sits over a lighter and busier background than the flat dark slab does, so the cards
+    // and hairlines drawn on top of it need more contrast to stay legible. Same colours, more of
+    // them - not different ones, which would make the two themes two designs.
 
-    public static readonly Color RowHover = Rgba(255, 255, 255, 0.07f);
-    public static readonly Color RowPressed = Rgba(255, 255, 255, 0.13f);
+    public static Color CardFill => Rgba(255, 255, 255, Glass ? 0.10f : 0.055f);
+    public static Color CardBorder => Rgba(255, 255, 255, Glass ? 0.16f : 0.075f);
+    public static Color Separator => Rgba(255, 255, 255, Glass ? 0.13f : 0.085f);
+
+    public static Color RowHover => Rgba(255, 255, 255, Glass ? 0.13f : 0.07f);
+    public static Color RowPressed => Rgba(255, 255, 255, Glass ? 0.20f : 0.13f);
     public static readonly Color Transparent = Rgba(255, 255, 255, 0f);
 
     /// <summary>macOS dark-mode accent. The light-mode #007AFF is too dark to read on this panel.</summary>
     public static readonly Color Accent = Rgb(10, 132, 255);
     public static readonly Color Danger = Rgb(255, 69, 58);
 
-    public static readonly Color SwitchOff = Rgba(255, 255, 255, 0.18f);
+    public static Color SwitchOff => Rgba(255, 255, 255, Glass ? 0.26f : 0.18f);
     public static readonly Color Knob = Rgb(255, 255, 255);
-    public static readonly Color SliderTrack = Rgba(255, 255, 255, 0.16f);
-    public static readonly Color SegmentWell = Rgba(255, 255, 255, 0.07f);
-    public static readonly Color SegmentSelected = Rgba(255, 255, 255, 0.20f);
-    public static readonly Color ScrollThumb = Rgba(255, 255, 255, 0.30f);
+    public static Color SliderTrack => Rgba(255, 255, 255, Glass ? 0.24f : 0.16f);
+    public static Color SegmentWell => Rgba(255, 255, 255, Glass ? 0.13f : 0.07f);
+    public static Color SegmentSelected => Rgba(255, 255, 255, Glass ? 0.28f : 0.20f);
+    public static Color ScrollThumb => Rgba(255, 255, 255, Glass ? 0.38f : 0.30f);
 
     public static readonly GdiColor TextPrimary = GdiColor.FromArgb(245, 245, 247);
     public static readonly GdiColor TextSecondary = GdiColor.FromArgb(152, 152, 157);

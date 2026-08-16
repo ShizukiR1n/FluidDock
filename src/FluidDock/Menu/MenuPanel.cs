@@ -39,6 +39,17 @@ internal sealed class MenuPanel : IDisposable
     /// <summary>Every interactive row, flattened once so hit testing is not a LINQ query per move.</summary>
     private readonly MenuRow[] _targets;
 
+    /// <summary>The panel's background sprite. Its brush is replaced on every open under glass.</summary>
+    private SpriteVisual? _background;
+
+    /// <summary>
+    /// The current background's surface and brush, held rather than registered with the canvas.
+    /// Anything registered lives until the whole tree is closed, and under glass these are made
+    /// afresh every time the panel opens.
+    /// </summary>
+    private CompositionDrawingSurface? _backdropSurface;
+    private CompositionSurfaceBrush? _backdropBrush;
+
     private RoundRect? _highlight;
     private AnimatedProperty? _highlightTravel;
     private AnimatedProperty? _highlightSize;
@@ -181,37 +192,79 @@ internal sealed class MenuPanel : IDisposable
     /// The card behind everything, plus its shadow.
     ///
     /// A baked bitmap rather than a shape, because DropShadow needs a brush to take its silhouette
-    /// from and geometry cannot offer one. The texture's own alpha is the mask, so the shadow
-    /// follows the rounded corners instead of squaring off at the visual's bounds.
+    /// from and geometry cannot offer one.
+    ///
+    /// The shadow's mask is a separate, plain silhouette rather than the background texture
+    /// itself. That costs one small bitmap and buys the thing the glass theme needs: the
+    /// background can be replaced whenever the panel is placed somewhere new, without the shadow
+    /// noticing. See <see cref="SetBackdrop"/>.
     /// </summary>
     private void BuildBackground()
     {
         int width = (int)MathF.Ceiling(PanelWidth);
         int height = (int)MathF.Ceiling(PanelHeight);
 
-        CompositionDrawingSurface surface;
-        using (System.Drawing.Bitmap texture = SurfaceTexture.RoundedPanel(
-                   width, height, MenuTheme.PanelRadius, MenuTheme.PanelTint,
-                   MenuTheme.PanelBorder, MenuTheme.PanelTopHighlight, MenuTheme.PanelNoise))
+        CompositionDrawingSurface silhouette;
+        using (System.Drawing.Bitmap mask = SurfaceTexture.Silhouette(width, height, MenuTheme.PanelRadius))
         {
-            surface = _canvas.Own(_canvas.Surfaces.CreateSurface(texture));
+            silhouette = _canvas.Own(_canvas.Surfaces.CreateSurface(mask));
         }
 
-        CompositionSurfaceBrush brush = _canvas.Own(_compositor.CreateSurfaceBrush(surface));
-
-        SpriteVisual background = _canvas.Own(_compositor.CreateSpriteVisual());
-        background.Size = new Vector2(PanelWidth, PanelHeight);
-        background.Brush = brush;
+        _background = _canvas.Own(_compositor.CreateSpriteVisual());
+        _background.Size = new Vector2(PanelWidth, PanelHeight);
 
         DropShadow shadow = _canvas.Own(_compositor.CreateDropShadow());
-        shadow.Mask = brush;
+        shadow.Mask = _canvas.Own(_compositor.CreateSurfaceBrush(silhouette));
         shadow.BlurRadius = MenuTheme.PanelShadowBlur;
         shadow.Opacity = MenuTheme.PanelShadowOpacity;
         shadow.Offset = new Vector3(0f, MenuTheme.PanelShadowOffsetY, 0f);
         shadow.Color = Windows.UI.Color.FromArgb(255, 0, 0, 0);
-        background.Shadow = shadow;
+        _background.Shadow = shadow;
 
-        _panel.Children.InsertAtTop(background);
+        _panel.Children.InsertAtTop(_background);
+
+        // The dark theme has nothing to wait for, so it is painted now and never touched again.
+        // The glass theme cannot be: it needs the screen behind the panel, and where that is has
+        // not been decided yet - the window is placed from this panel's measured height, which
+        // only exists once the tree above has been built.
+        if (MenuTheme.Panel == PanelTheme.Dark) SetBackdrop(null);
+    }
+
+    /// <summary>
+    /// Paints the panel's background, over a capture of whatever the panel is about to cover.
+    ///
+    /// Called once for the dark theme, which ignores the capture, and on every open for the glass
+    /// theme - because glass that keeps a picture of somewhere the panel used to be is worse than
+    /// no glass at all. A null capture is a working fallback rather than a failure: it bakes as
+    /// frosted glass with nothing behind it.
+    ///
+    /// The old surface is closed as the new one is taken, which is the same rule
+    /// <see cref="MutableText"/> follows for the same reason - a bitmap per open, held until the
+    /// panel is rebuilt, is a leak with a slow fuse.
+    /// </summary>
+    public void SetBackdrop(System.Drawing.Bitmap? capture)
+    {
+        if (_background is null) return;
+
+        int width = (int)MathF.Ceiling(PanelWidth);
+        int height = (int)MathF.Ceiling(PanelHeight);
+
+        CompositionDrawingSurface surface;
+        using (System.Drawing.Bitmap texture = MenuTheme.Panel == PanelTheme.Glass
+                   ? LiquidGlass.Bake(capture, width, height, MenuTheme.PanelRadius, MenuTheme.GlassTint, MenuTheme.GlassNoise)
+                   : SurfaceTexture.RoundedPanel(width, height, MenuTheme.PanelRadius, MenuTheme.PanelTint,
+                       MenuTheme.PanelBorder, MenuTheme.PanelTopHighlight, MenuTheme.PanelNoise))
+        {
+            surface = _canvas.Surfaces.CreateSurface(texture);
+        }
+
+        CompositionSurfaceBrush brush = _compositor.CreateSurfaceBrush(surface);
+        _background.Brush = brush;
+
+        _backdropBrush?.Dispose();
+        _backdropSurface?.Dispose();
+        _backdropBrush = brush;
+        _backdropSurface = surface;
     }
 
     private void BuildHeader()
@@ -908,6 +961,10 @@ internal sealed class MenuPanel : IDisposable
     public void Dispose()
     {
         _canvas.RetireAnimations();
+
+        // Not in _resources, so not covered by the loop below. See the fields.
+        _backdropBrush?.Dispose();
+        _backdropSurface?.Dispose();
 
         for (int i = _resources.Count - 1; i >= 0; i--) _resources[i].Dispose();
         _resources.Clear();

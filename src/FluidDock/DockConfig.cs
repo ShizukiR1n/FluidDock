@@ -56,11 +56,30 @@ internal enum DockLayer
     Top,
 }
 
+internal enum PanelTheme
+{
+    /// <summary>
+    /// A baked translucent slab: gradient tint, hairline border, film grain. Owes nothing to
+    /// what is behind it, so it costs one bitmap at build time and never changes again.
+    /// </summary>
+    Dark,
+
+    /// <summary>
+    /// Real glass over whatever was on screen where the panel is about to appear - blurred,
+    /// refracted at the rim, lit from the top left. See <see cref="Graphics.SurfaceTexture"/>.
+    /// </summary>
+    Glass,
+}
+
 internal sealed class DockConfig
 {
     /// <summary>Where the dock sits in the window stack. See <see cref="DockLayer"/>.</summary>
     [JsonConverter(typeof(JsonStringEnumConverter))]
     public DockLayer Layer { get; set; } = DockLayer.Desktop;
+
+    /// <summary>What the settings panel is made of. See <see cref="PanelTheme"/>.</summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
+    public PanelTheme Theme { get; set; } = PanelTheme.Glass;
 
     public DockMetricsConfig Metrics { get; set; } = new();
     public List<DockItemConfig> Items { get; set; } = new();

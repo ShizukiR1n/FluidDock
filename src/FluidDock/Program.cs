@@ -41,6 +41,28 @@ internal static class Program
         {
             Win32.SetProcessDpiAwarenessContext(Win32.DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
+            // Nothing this thread owns accepts typed text. The dock is clicks and the settings
+            // panel reads exactly one key - Escape - so there is no field here for an input method
+            // to serve.
+            //
+            // Left on, there is one anyway. The panel takes the keyboard focus deliberately, and
+            // the first time it does, Windows attaches the user's IME to the process: on this
+            // machine that is Sogou, which brings twenty DLLs and about 37 MB with it - measured,
+            // and by a wide margin the largest single cost in the program. It was diagnosed for a
+            // long time as the font stack, because it arrives at the same moment DirectWrite does
+            // and both were charged to "opening the settings panel".
+            //
+            // This thread only, not 0xFFFFFFFF for the process. There is exactly one place in the
+            // app where typing is the user's to do and not ours to refuse - the file name box in
+            // the shell's own open dialog - and disabling the IME process-wide made that box
+            // unable to accept Chinese, which is not a trade a Chinese user should be asked to
+            // make. So the dialog runs on a thread of its own, where the IME is untouched: see
+            // MenuWindow.Dialog. Opening it does load the 37 MB, and only then.
+            //
+            // Must be before the first CreateWindowEx on this thread; afterwards it silently does
+            // nothing.
+            Win32.ImmDisableIME(Win32.GetCurrentThreadId());
+
             // Must precede `new Compositor()`.
             CompositorInterop.EnsureDispatcherQueueOnCurrentThread();
             Note("Dispatcher queue ready");
@@ -73,10 +95,15 @@ internal static class Program
             MenuWindow? built = null;
             var items = new DockItems(
                 settings,
-                () => built?.Handle ?? IntPtr.Zero,
+                (ask, apply) => built?.Dialog(ask, apply),
                 action => built?.Defer(action));
 
-            var panel = new MenuWindow(host, () => MenuDefinition.Build(new MenuContext
+            // The page factory, and the one place a panel build begins - so it is also the place
+            // the theme is settled, before a single row asks MenuTheme what colour it is.
+            var panel = new MenuWindow(host, () =>
+            {
+                MenuTheme.Use(settings.Config.Theme);
+                return MenuDefinition.Build(new MenuContext
             {
                 Store = settings,
                 Items = items,
@@ -87,9 +114,21 @@ internal static class Program
                     notify.DockVisible = visible;
                     window.SetVisible(visible);
                 },
+                AutoStart = () => Native.AutoStart.Enabled,
+                SetAutoStart = value => Native.AutoStart.Enabled = value,
+                SetTheme = theme =>
+                {
+                    settings.Config.Theme = theme;
+                    settings.Save();
+
+                    // Deferred, because rebuilding the panel disposes the tree that is currently
+                    // dispatching the click that asked for it. Same rule as the item list's.
+                    built?.Defer(() => built.Restyle());
+                },
                 OpenConfig = () => OpenConfig(settings.Path),
                 Quit = () => Win32.PostQuitMessage(0),
-            }));
+                });
+            });
 
             built = panel;
             menu = panel;

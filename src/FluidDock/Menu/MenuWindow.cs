@@ -20,6 +20,14 @@ namespace FluidDock.Menu;
 /// The panel is built on first open, not at startup, and kept afterwards. Rasterising twenty-odd
 /// strings costs a few milliseconds that a user who never opens the panel should not pay, and one
 /// that does should pay only once.
+///
+/// Releasing it on close was tried and measured, because the panel looked like it was costing
+/// 40 MB. It is not: that was the IME attaching to the process the first time this window took
+/// the keyboard focus - see Program.Main - and the tree's own share is small enough to sit under
+/// the noise. Destroying and rebuilding it came out 5 MB *worse*, since every rebuild churns a
+/// page of bitmaps through the managed heap, and cost 34ms on every open for the privilege.
+/// <c>tools\MenuMemoryTest.ps1</c> is that measurement, kept so the next person to have the idea
+/// can rerun it rather than re-argue it.
 /// </summary>
 internal sealed class MenuWindow : IDisposable
 {
@@ -42,7 +50,12 @@ internal sealed class MenuWindow : IDisposable
     private readonly CompositionHost _host;
     private readonly Func<MenuPage> _buildPage;
 
-    /// <summary>Work posted to run after the message that asked for it. See <see cref="Defer"/>.</summary>
+    /// <summary>
+    /// Work posted to run after the message that asked for it. See <see cref="Defer"/>.
+    ///
+    /// Locked, because a dialog thread posts its answer here while the UI thread may be taking the
+    /// previous entry out.
+    /// </summary>
     private readonly Queue<Action> _deferred = new();
 
     private WndProc? _wndProc;
@@ -59,13 +72,17 @@ internal sealed class MenuWindow : IDisposable
     private bool _capturing;
 
     /// <summary>
-    /// True while a deferred action is running, which is when a system dialog may be on screen.
+    /// How many reasons there are to believe a system dialog is on screen.
     ///
     /// The panel dismisses itself on losing activation, and that is exactly what a file dialog
     /// takes. Without this, choosing an icon would close the panel the moment the dialog opened
     /// and reopen it into nothing.
+    ///
+    /// A count rather than a flag because the dialog no longer runs to completion inside the
+    /// deferred action that started it - it runs on a thread of its own, and the hold has to
+    /// outlive the call that took it. See <see cref="Dialog"/>.
     /// </summary>
-    private bool _modal;
+    private int _modal;
 
     /// <summary>
     /// Screen position of the panel's bottom-right corner, kept from the last time it was placed.
@@ -76,6 +93,17 @@ internal sealed class MenuWindow : IDisposable
     /// </summary>
     private int _anchorRight;
     private int _anchorBottom;
+
+    /// <summary>Where the panel itself last landed, in screen coordinates. Not the window: see Position.</summary>
+    private int _panelLeft;
+    private int _panelTop;
+
+    /// <summary>
+    /// The screen behind the panel, for the glass theme to refract. Null for the dark theme, and
+    /// null when the grab failed - which <see cref="MenuPanel.SetBackdrop"/> treats as "frosted,
+    /// with nothing behind" rather than as an error.
+    /// </summary>
+    private System.Drawing.Bitmap? _capture;
 
     /// <summary>Raised when a row changed something, so the config can be written.</summary>
     public event Action? Changed;
@@ -147,6 +175,10 @@ internal sealed class MenuWindow : IDisposable
 
         Place(panel);
 
+        // While the window is still hidden, which is the only moment the screen where the panel
+        // is about to be is a picture of anything but the panel.
+        Glaze(panel, regrab: true);
+
         _open = true;
         _closing = false;
 
@@ -182,18 +214,19 @@ internal sealed class MenuWindow : IDisposable
     {
         if (_hwnd == IntPtr.Zero) return;
 
-        _deferred.Enqueue(action);
+        lock (_deferred) _deferred.Enqueue(action);
         Win32.PostMessageW(_hwnd, Win32.WM_APP_MENU_RUN, IntPtr.Zero, IntPtr.Zero);
     }
 
     private void RunDeferred()
     {
-        if (_deferred.Count == 0) return;
+        Action? action;
+        lock (_deferred) action = _deferred.Count > 0 ? _deferred.Dequeue() : null;
+        if (action is null) return;
 
-        Action action = _deferred.Dequeue();
         bool wasOpen = _open;
 
-        _modal = true;
+        _modal++;
 
         try
         {
@@ -206,12 +239,66 @@ internal sealed class MenuWindow : IDisposable
         }
         finally
         {
-            _modal = false;
+            _modal--;
         }
 
         // A dialog leaves the foreground somewhere else. Taking it back is what makes the panel
         // still be there - and still dismissable by clicking away - once the dialog is gone.
-        if (wasOpen && _open) Win32.SetForegroundWindow(_hwnd);
+        // Not while another dialog is still up: this action may have been the one that merely
+        // started it, and stealing the foreground from a dialog we opened ourselves is worse than
+        // anything it fixes.
+        if (_modal == 0 && wasOpen && _open) Win32.SetForegroundWindow(_hwnd);
+    }
+
+    /// <summary>
+    /// Runs a system dialog on a thread of its own, and brings the answer back to this one.
+    ///
+    /// The thread is the point. The main thread has its IME disabled - see Program.Main - and a
+    /// dialog shown from it therefore cannot accept Chinese in its file name box. A thread created
+    /// afterwards inherits no such thing, so the dialog gets the user's input method and this
+    /// thread stays without one.
+    ///
+    /// The window is still the owner, so the shell disables the panel behind the dialog exactly as
+    /// it did when the two shared a thread. Cross-thread ownership attaches the two input queues,
+    /// which is safe here only because this thread never waits on the other: the answer comes back
+    /// through <see cref="Defer"/> rather than through a join.
+    /// </summary>
+    public void Dialog(Func<IntPtr, string[]> ask, Action<string[]> apply)
+    {
+        if (_hwnd == IntPtr.Zero) return;
+
+        IntPtr owner = _hwnd;
+        _modal++;
+
+        var thread = new Thread(() =>
+        {
+            string[] answer;
+
+            try
+            {
+                answer = ask(owner);
+            }
+            catch (Exception)
+            {
+                answer = [];
+            }
+
+            // Even on failure, and even if nothing was picked. The hold has to be released on the
+            // thread that took it, or the panel spends the rest of the session unable to dismiss.
+            Defer(() =>
+            {
+                _modal--;
+                if (answer.Length > 0) apply(answer);
+            });
+        })
+        {
+            IsBackground = true,
+            Name = "FluidDock dialog",
+        };
+
+        // The shell's dialog is an apartment-threaded COM object and will not run anywhere else.
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
     }
 
     /// <summary>
@@ -227,15 +314,7 @@ internal sealed class MenuWindow : IDisposable
         if (_panel is null) return;
 
         float scroll = _panel.Scroll;
-
-        _fade?.Retire();
-        _scale?.Retire();
-        _fade = null;
-        _scale = null;
-
-        if (_target is not null) _target.Root = null;
-        _panel.Dispose();
-        _panel = null;
+        Teardown();
 
         MenuPanel panel = EnsurePanel();
         panel.RestoreScroll(scroll);
@@ -244,10 +323,38 @@ internal sealed class MenuWindow : IDisposable
 
         Position(panel);
 
+        // Re-baked but not re-grabbed: the window is on screen, so a grab now would photograph
+        // the panel. The capture from the last open still fits, because the corner the panel is
+        // anchored to has not moved - only its height has, and the bake aligns to that corner and
+        // clamps past the edges of what it has. Under this much blur a rebuild that added a row
+        // stretches the topmost strip by 44 pixels and nobody has ever seen it.
+        Glaze(panel, regrab: false);
+
         // Straight to fully open. The card that was on screen a moment ago was already there;
         // replaying the entrance animation would say something appeared that did not.
         panel.Card.Opacity = 1f;
         panel.Card.Scale = Vector3.One;
+    }
+
+    /// <summary>
+    /// Closes the panel's tree, leaving the window itself alive and empty.
+    ///
+    /// Shared by the rebuild, the release-on-close and the shutdown, because the order matters and
+    /// getting it wrong fails in three different ways: the window's own two animations are not the
+    /// panel's to retire, and the target holds a reference of its own to the root - closing the
+    /// tree while it is still attached leaves the target pointing at a dead visual.
+    /// </summary>
+    private void Teardown()
+    {
+        _fade?.Retire();
+        _scale?.Retire();
+        _fade = null;
+        _scale = null;
+
+        if (_target is not null) _target.Root = null;
+
+        _panel?.Dispose();
+        _panel = null;
     }
 
     private MenuPanel EnsurePanel()
@@ -309,12 +416,79 @@ internal sealed class MenuWindow : IDisposable
         x = Math.Clamp(x, work.Left + ScreenMargin, Math.Max(work.Right - ScreenMargin - panelW, work.Left + ScreenMargin));
         y = Math.Clamp(y, work.Top + ScreenMargin, Math.Max(work.Bottom - ScreenMargin - panelH, work.Top + ScreenMargin));
 
+        _panelLeft = x;
+        _panelTop = y;
+
         int margin = (int)MenuTheme.ShadowMargin;
         Win32.SetWindowPos(
             _hwnd, Win32.HWND_TOPMOST,
             x - margin, y - margin,
             (int)MathF.Ceiling(panel.WindowWidth), (int)MathF.Ceiling(panel.WindowHeight),
             Win32.SWP_NOACTIVATE);
+    }
+
+    /// <summary>
+    /// Paints the panel's background against the screen behind it.
+    ///
+    /// Does nothing under the dark theme, which painted itself when it was built and has no
+    /// opinion about where it is.
+    /// </summary>
+    private void Glaze(MenuPanel panel, bool regrab)
+    {
+        if (MenuTheme.Panel != PanelTheme.Glass) return;
+
+        if (regrab)
+        {
+            _capture?.Dispose();
+            _capture = ScreenCapture.Grab(
+                _panelLeft, _panelTop,
+                (int)MathF.Ceiling(panel.PanelWidth), (int)MathF.Ceiling(panel.PanelHeight));
+        }
+
+        panel.SetBackdrop(_capture);
+    }
+
+    /// <summary>
+    /// Re-grabs the backdrop while the panel is open, by stepping out of the shot.
+    ///
+    /// Only the theme switch needs this, and it needs it badly: the one moment a user is
+    /// guaranteed to be looking at the glass is the moment they turn it on, and at that moment the
+    /// panel is on screen and there is nothing behind it to photograph but itself.
+    ///
+    /// Moved off screen rather than hidden. Hiding a window drops its activation, and this window
+    /// closes itself when it loses activation - so SW_HIDE here would dismiss the panel as a side
+    /// effect of repainting it. A move with SWP_NOACTIVATE changes nothing about focus.
+    ///
+    /// DwmFlush is what makes it work at all. SetWindowPos only queues the move; without waiting
+    /// for the composition pass that actually carries it out, the grab happens while the panel is
+    /// still on screen and bakes a picture of itself into its own background.
+    /// </summary>
+    private void Regrab(MenuPanel panel)
+    {
+        if (MenuTheme.Panel != PanelTheme.Glass || !_open) return;
+
+        int margin = (int)MenuTheme.ShadowMargin;
+        int windowWidth = (int)MathF.Ceiling(panel.WindowWidth);
+        int windowHeight = (int)MathF.Ceiling(panel.WindowHeight);
+
+        Win32.SetWindowPos(_hwnd, Win32.HWND_TOPMOST, -30000, -30000, windowWidth, windowHeight, Win32.SWP_NOACTIVATE);
+        Win32.DwmFlush();
+
+        Glaze(panel, regrab: true);
+
+        Win32.SetWindowPos(
+            _hwnd, Win32.HWND_TOPMOST,
+            _panelLeft - margin, _panelTop - margin, windowWidth, windowHeight, Win32.SWP_NOACTIVATE);
+    }
+
+    /// <summary>
+    /// Rebuilds the panel in the other material, and does it without the user having to close and
+    /// reopen the thing they are looking at to see what they picked.
+    /// </summary>
+    public void Restyle()
+    {
+        Reload();
+        if (_panel is not null) Regrab(_panel);
     }
 
     private void AnimateOpen(MenuPanel panel)
@@ -414,7 +588,7 @@ internal sealed class MenuWindow : IDisposable
                 // this window takes the foreground, and that is exactly when the panel should go.
                 // Except while a dialog we opened has it, which is the one case where losing
                 // activation means the panel is being used rather than abandoned.
-                if (!_modal && ((long)wParam & 0xFFFF) == Win32.WA_INACTIVE) Close();
+                if (_modal == 0 && ((long)wParam & 0xFFFF) == Win32.WA_INACTIVE) Close();
                 return IntPtr.Zero;
 
             case Win32.WM_KEYDOWN:
@@ -512,15 +686,10 @@ internal sealed class MenuWindow : IDisposable
     {
         if (_hwnd != IntPtr.Zero) Win32.KillTimer(_hwnd, TimerDragScroll);
 
-        _fade?.Retire();
-        _scale?.Retire();
-
-        // Detached before the tree is closed: the target holds its own reference to the root, and
-        // closing the root while it is still attached leaves the target pointing at a dead visual.
-        if (_target is not null) _target.Root = null;
-
-        _panel?.Dispose();
+        Teardown();
         _target?.Dispose();
+        _capture?.Dispose();
+        _capture = null;
 
         if (_hwnd != IntPtr.Zero)
         {

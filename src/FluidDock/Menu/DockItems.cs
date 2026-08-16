@@ -3,6 +3,15 @@ using FluidDock.Native;
 namespace FluidDock.Menu;
 
 /// <summary>
+/// Shows a system dialog somewhere the panel is not, and brings the answer back to it.
+///
+/// <paramref name="ask"/> is handed a window to be modal to and runs off the UI thread;
+/// <paramref name="apply"/> runs back on it, and only when something was actually picked. See
+/// <see cref="MenuWindow.Dialog"/> for what "somewhere the panel is not" buys.
+/// </summary>
+internal delegate void DialogRunner(Func<IntPtr, string[]> ask, Action<string[]> apply);
+
+/// <summary>
 /// Everything that can be done to the dock's list of entries, in one place.
 ///
 /// The rows below call these; nothing else does. That is what keeps "add an app" one line in
@@ -22,18 +31,19 @@ namespace FluidDock.Menu;
 /// a row's release handler, which the panel is in the middle of - so an add that opened a dialog
 /// would do it while the panel still held the mouse capture, and a remove that rebuilt the panel
 /// would free the tree out from under the call that asked for it. Deferring is enforced here
-/// rather than at the call sites so that a row written later cannot forget.
+/// rather than at the call sites so that a row written later cannot forget. The three that need a
+/// dialog go one step further and run it on a thread of its own; see <see cref="DialogRunner"/>.
 /// </summary>
 internal sealed class DockItems
 {
     private readonly SettingsStore _store;
-    private readonly Func<IntPtr> _owner;
+    private readonly DialogRunner _dialog;
     private readonly Action<Action> _defer;
 
-    public DockItems(SettingsStore store, Func<IntPtr> owner, Action<Action> defer)
+    public DockItems(SettingsStore store, DialogRunner dialog, Action<Action> defer)
     {
         _store = store;
-        _owner = owner;
+        _dialog = dialog;
         _defer = defer;
     }
 
@@ -44,18 +54,26 @@ internal sealed class DockItems
     public event Action? StructureChanged;
 
     /// <summary>Programs, shortcuts, documents - whatever the shell will open.</summary>
-    public void AddPrograms() => _defer(() => Add(FileDialog.PickPrograms(_owner())));
+    public void AddPrograms() => Ask(FileDialog.PickPrograms, Add);
 
-    public void AddFolder() => _defer(() =>
-    {
-        string? folder = FileDialog.PickFolder(_owner());
-        if (folder is not null) Add([folder]);
-    });
+    public void AddFolder() => Ask(FileDialog.PickFolder, Add);
 
     public void Remove(DockItemConfig item) => _defer(() => RemoveNow(item));
 
     /// <summary>Picks a replacement image. Cancelling leaves whatever was there.</summary>
-    public void ChooseIcon(DockItemConfig item) => _defer(() => ChooseIconNow(item));
+    public void ChooseIcon(DockItemConfig item) =>
+        Ask(FileDialog.PickIcon, picked => ChooseIconNow(item, picked[0]));
+
+    /// <summary>
+    /// Opens a picker once the message that asked for it has been dealt with.
+    ///
+    /// Deferred even though the dialog no longer runs on this thread. These are called from a
+    /// row's release handler, and the panel still holds the mouse capture at that moment - a
+    /// dialog quick enough to activate before the release finishes being delivered would take the
+    /// capture away mid-press.
+    /// </summary>
+    private void Ask(Func<IntPtr, string[]> pick, Action<string[]> apply) =>
+        _defer(() => _dialog(pick, apply));
 
     /// <summary>Goes back to whatever the shell has for the entry's own path.</summary>
     public void ResetIcon(DockItemConfig item) => _defer(() => ResetIconNow(item));
@@ -96,11 +114,8 @@ internal sealed class DockItems
         Changed?.Invoke();
     }
 
-    private void ChooseIconNow(DockItemConfig item)
+    private void ChooseIconNow(DockItemConfig item, string icon)
     {
-        string? icon = FileDialog.PickIcon(_owner());
-        if (icon is null) return;
-
         item.Icon = Relative(icon);
 
         Changed?.Invoke();

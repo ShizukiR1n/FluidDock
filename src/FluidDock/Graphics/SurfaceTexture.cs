@@ -72,7 +72,32 @@ internal static class SurfaceTexture
             }
         }
 
-        if (noise > 0f) ApplyGrain(bitmap, noise);
+        if (noise > 0f) Grain(bitmap, noise);
+        return bitmap;
+    }
+
+    /// <summary>
+    /// The panel's outline, opaque, with nothing in it.
+    ///
+    /// Exists to be a DropShadow's mask. The shadow needs an alpha channel to take its silhouette
+    /// from, and the obvious candidate - the panel's own background - is not usable for the glass
+    /// theme, where the background is re-baked against a fresh screen capture every time the panel
+    /// is placed. A shadow whose mask is swapped out from under it flickers; this one is built
+    /// once and never changes, because the shape never does.
+    /// </summary>
+    public static Bitmap Silhouette(int width, int height, float cornerRadius)
+    {
+        var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+        using var g = System.Drawing.Graphics.FromImage(bitmap);
+
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        g.Clear(Color.Transparent);
+
+        using GraphicsPath path = IconLoader.RoundedRect(
+            new Rectangle(0, 0, width - 1, height - 1), (int)MathF.Round(cornerRadius * 2f));
+        using var fill = new SolidBrush(Color.Black);
+        g.FillPath(fill, path);
+
         return bitmap;
     }
 
@@ -83,7 +108,7 @@ internal static class SurfaceTexture
     /// Seeded, not random: an unseeded pattern would differ between the panel and a rebuild of
     /// the panel, and a background that shimmers when a row is added is worse than no grain.
     /// </summary>
-    private static void ApplyGrain(Bitmap bitmap, float strength)
+    public static void Grain(Bitmap bitmap, float strength)
     {
         var random = new Random(0x5EED);
         int amplitude = (int)MathF.Round(Math.Clamp(strength, 0f, 1f) * 255f);

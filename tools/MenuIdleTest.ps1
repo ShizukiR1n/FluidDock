@@ -73,9 +73,15 @@ $failures = 0
 # A median was the original rule and it does not work here. TotalProcessorTime is quantised to the
 # scheduler's ~15.6ms, so every bucket reads 0 or 16 and nothing in between; with four buckets,
 # two stray wake-ups put the median on 16 and report a perfectly idle panel as leaking. What an
-# open, untouched panel actually looks like, measured over 40 seconds:
+# open, untouched panel looked like when that was written, measured over 40 seconds:
 #
 #   16 16 0 0 0 16 16 0 0 0 0 0 0 0 0 0 16 0 0 0     80 ms / 40s = 2.0 ms/s, 5 of 20 buckets busy
+#
+# Those wake-ups turned out not to be ours. They were the IME's background threads, which loaded
+# into the process the first time the panel took focus; since Program.Main started calling
+# ImmDisableIME every phase reads a flat zero. The rule is kept as it is anyway - it is correct
+# for the quantisation whether or not anything happens to be waking the process today, and being
+# right for the wrong reason is how the median rule got here.
 #
 # Hence the default of 20 seconds rather than 8: at four buckets the fraction is too coarse to
 # mean anything.

@@ -493,6 +493,21 @@ internal sealed class DockWindow : IDisposable
         if (_layout is not null) PositionWindow(_windowW, _windowH);
     }
 
+    /// <summary>
+    /// Moves and sizes the dock's window.
+    ///
+    /// SWP_NOCOPYBITS is the whole of a bug that looked like the wallpaper tearing. By default
+    /// SetWindowPos carries the window's existing pixels over to the new position - a real saving
+    /// for a window that would otherwise repaint them, and a corruption for this one. The dock is
+    /// WS_EX_NOREDIRECTIONBITMAP and a child of the desktop: it paints nothing into the desktop's
+    /// surface, so the pixels inside its rectangle there are the wallpaper. Moving the window blitted
+    /// a slab of wallpaper to a new offset and left it, and nothing ever invalidated it - so a nudge
+    /// of the 图标大小 slider smeared the desktop, and every further nudge smeared it again.
+    ///
+    /// The repaint afterwards is for the band the window has just left, and for repairing whatever
+    /// a previous build left behind. Only on the desktop layer: elsewhere the dock is a top-level
+    /// window with a surface of its own and there is nothing underneath it to put back.
+    /// </summary>
     private void PositionWindow(int width, int height)
     {
         RECT work = Win32.GetWorkArea();
@@ -517,7 +532,7 @@ internal sealed class DockWindow : IDisposable
         // SWP_SHOWWINDOW only when the dock is meant to be on screen. Unconditionally, a config
         // reload - or the rebuild after an Explorer restart - would drag a dock the user had
         // hidden back into view while the tray menu still showed it as hidden.
-        uint flags = Win32.SWP_NOACTIVATE | (_visible ? Win32.SWP_SHOWWINDOW : 0);
+        uint flags = Win32.SWP_NOACTIVATE | Win32.SWP_NOCOPYBITS | (_visible ? Win32.SWP_SHOWWINDOW : 0);
         IntPtr insertAfter = IntPtr.Zero;
 
         switch (_config.Layer)
@@ -527,7 +542,30 @@ internal sealed class DockWindow : IDisposable
             default: flags |= Win32.SWP_NOZORDER; break;
         }
 
+        // Read before the move, so the area being vacated is still known. In the desktop's client
+        // coordinates, which is what both SetWindowPos and RedrawWindow speak for a child window.
+        RECT was = default;
+        bool moving = _desktop != IntPtr.Zero && Win32.GetWindowRect(_hwnd, out was);
+        if (moving && Win32.GetWindowRect(_desktop, out RECT owner))
+        {
+            was.Left -= owner.Left; was.Right -= owner.Left;
+            was.Top -= owner.Top; was.Bottom -= owner.Top;
+        }
+
         Win32.SetWindowPos(_hwnd, insertAfter, x, y, width, height, flags);
+
+        if (!moving) return;
+
+        var repaint = new RECT
+        {
+            Left = Math.Min(was.Left, x),
+            Top = Math.Min(was.Top, y),
+            Right = Math.Max(was.Right, x + width),
+            Bottom = Math.Max(was.Bottom, y + height),
+        };
+
+        Win32.RedrawWindow(_desktop, ref repaint, IntPtr.Zero,
+            Win32.RDW_INVALIDATE | Win32.RDW_ERASE | Win32.RDW_ALLCHILDREN);
     }
 
     private IntPtr WindowProc(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam)

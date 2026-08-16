@@ -141,27 +141,30 @@ internal static class FileDialog
             new COMDLG_FILTERSPEC { pszName = "所有文件", pszSpec = "*.*" },
         ]);
 
-    public static string? PickFolder(IntPtr owner) =>
-        Pick(owner, "添加文件夹到 Dock", "添加", FOS.PickFolders, null).FirstOrDefault();
+    /// <summary>One folder, or nothing. An array so that every picker here answers the same way.</summary>
+    public static string[] PickFolder(IntPtr owner) =>
+        Pick(owner, "添加文件夹到 Dock", "添加", FOS.PickFolders, null);
 
     /// <summary>
     /// An image to use in place of the extracted icon. Executables are offered too: pointing at
     /// one means "borrow that program's icon", which is the easiest way to fix the handful of
     /// apps whose own icon is the ugly one.
     /// </summary>
-    public static string? PickIcon(IntPtr owner) => Pick(
+    public static string[] PickIcon(IntPtr owner) => Pick(
         owner, "选择图标", "选择", 0,
         [
             new COMDLG_FILTERSPEC { pszName = "图片和图标", pszSpec = "*.png;*.ico;*.jpg;*.jpeg;*.bmp;*.exe;*.dll" },
             new COMDLG_FILTERSPEC { pszName = "所有文件", pszSpec = "*.*" },
-        ]).FirstOrDefault();
+        ]);
 
     /// <summary>
     /// Runs the dialog and returns whatever was chosen, or an empty array if the user said no.
     ///
-    /// Every failure is a cancel. This is called from a window procedure, and there is nothing
-    /// useful a dock can do about a shell that will not open its own file dialog except carry on
-    /// with the list the user already had.
+    /// Every failure is a cancel. There is nothing useful a dock can do about a shell that will
+    /// not open its own file dialog except carry on with the list the user already had.
+    ///
+    /// Called on an STA thread of its own rather than on the UI thread - see MenuWindow.Dialog for
+    /// why - so it blocks for as long as the dialog is up, and nothing here may touch the panel.
     /// </summary>
     private static string[] Pick(IntPtr owner, string title, string okLabel, FOS extra, COMDLG_FILTERSPEC[]? filters)
     {

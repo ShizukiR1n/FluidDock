@@ -189,6 +189,14 @@ internal static class Win32
     public const uint SWP_NOZORDER = 0x0004;
     public const uint SWP_NOACTIVATE = 0x0010;
     public const uint SWP_SHOWWINDOW = 0x0040;
+
+    /// <summary>
+    /// Do not carry the window's pixels over to its new position.
+    ///
+    /// The default is to blit them, which is a real saving for a window that paints its own
+    /// content and a corruption for one that does not. See DockWindow.PositionWindow.
+    /// </summary>
+    public const uint SWP_NOCOPYBITS = 0x0100;
     public static readonly IntPtr HWND_TOPMOST = new(-1);
     public static readonly IntPtr HWND_NOTOPMOST = new(-2);
     public static readonly IntPtr HWND_TOP = new(0);
@@ -267,6 +275,26 @@ internal static class Win32
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool SetProcessDpiAwarenessContext(IntPtr value);
 
+    /// <summary>
+    /// Turns the input method editor off for one thread, or for every thread in the process if
+    /// passed <c>0xFFFFFFFF</c>. Must be called before the thread creates a window - afterwards it
+    /// silently does nothing.
+    ///
+    /// Which of the two is used matters here. See Program.Main.
+    /// </summary>
+    [DllImport("imm32.dll")]
+    public static extern bool ImmDisableIME(uint idThread);
+
+    [DllImport("kernel32.dll")]
+    public static extern uint GetCurrentThreadId();
+
+    /// <summary>
+    /// Blocks until DWM has finished the next composition pass. The only way to know a window
+    /// move has actually reached the screen, as opposed to having been queued.
+    /// </summary>
+    [DllImport("dwmapi.dll")]
+    public static extern int DwmFlush();
+
     [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
     public static extern IntPtr FindWindowW(string? lpClassName, string? lpWindowName);
 
@@ -284,6 +312,16 @@ internal static class Win32
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern int SetWindowRgn(IntPtr hWnd, IntPtr hRgn, bool bRedraw);
+
+    // RedrawWindow flags. ALLCHILDREN because the desktop paints the wallpaper in one window and
+    // the icons in a child of it, and a band that only got half of that back is worse than one
+    // that got neither.
+    public const uint RDW_INVALIDATE = 0x0001;
+    public const uint RDW_ERASE = 0x0004;
+    public const uint RDW_ALLCHILDREN = 0x0080;
+
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool RedrawWindow(IntPtr hWnd, ref RECT update, IntPtr region, uint flags);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr SetTimer(IntPtr hWnd, IntPtr id, uint elapseMs, IntPtr callback);
