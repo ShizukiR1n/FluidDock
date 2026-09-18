@@ -1,6 +1,6 @@
 # FluidDock
 
-Windows 上的 macOS 风格 Dock，用 C# + `Windows.UI.Composition` 写的。
+Windows 上的 macOS 风格 Dock。
 
 目前软件还处在早期适配阶段，可能会有诸多问题，如有 bug 欢迎反馈。
 
