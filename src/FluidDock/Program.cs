@@ -167,8 +167,11 @@ internal static class Program
             items.StructureChanged += panel.Reload;
 
             // The update row reads its two strings from the updater; this is what makes it look
-            // again. Nothing is saved - none of this state belongs in dock.json.
+            // again. Nothing is saved - none of this state belongs in dock.json. The notes under
+            // it are a row that exists or does not, which is a rebuild - the same one the item
+            // list asks for when it changes length.
             updater.Changed += panel.Refresh;
+            updater.LayoutChanged += panel.Reload;
 
             panel.Create();
             Note($"Menu window created, hwnd=0x{panel.Handle:X}");

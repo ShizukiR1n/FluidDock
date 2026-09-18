@@ -100,7 +100,10 @@ try {
         $listener = New-Object System.Net.HttpListener
         $listener.Prefixes.Add("http://127.0.0.1:$port/")
         $listener.Start()
-        $json = '{"tag_name":"v9.9","assets":[{"name":"FluidDock.exe","url":"http://127.0.0.1:' + $port + '/asset","size":' + $length + ',"digest":"sha256:' + $digest + '"}]}'
+        # A body in the shape release notes are written in, so the notes row under the update
+        # row has something to wrap: a heading, bullets, emphasis, and a line long enough to break.
+        $notes = '## What changed\r\n- Fixed: the **residue** under the icons after a fullscreen game and Win+D\r\n- Added: this update button, which downloads the release and swaps the exe in place without touching the config folder or the icon list\r\n* Notes appear here'
+        $json = '{"tag_name":"v9.9","body":"' + $notes + '","assets":[{"name":"FluidDock.exe","url":"http://127.0.0.1:' + $port + '/asset","size":' + $length + ',"digest":"sha256:' + $digest + '"}]}'
         while ($true) {
             $ctx = $listener.GetContext()
             $path = $ctx.Request.Url.AbsolutePath
@@ -172,9 +175,42 @@ try {
     $updateCenter = @{ X = $panelL + [int]($PanelWidth / 2); Y = $aboutTop - $SectionGap - [int]($RowHeight / 2) }
 
     # ---- check, then update ---------------------------------------------------------------
+    # The strip below the update row, before and after the check. A found version puts its
+    # notes there, which rebuilds the panel and pushes the last card down - so if the strip
+    # looks the same afterwards, no notes were shown. Rows above the strip keep their place
+    # across the rebuild (the scroll offset is carried over), which is what lets the second
+    # click below aim at the same point as the first.
+    function Strip-Shot {
+        $top = $updateCenter.Y + [int]($RowHeight / 2)
+        $bmp = New-Object System.Drawing.Bitmap($PanelWidth, ($contentBottom - $top))
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen($panelL, $top, 0, 0, $bmp.Size)
+        $g.Dispose()
+        $bmp
+    }
+    function Strip-Diff($a, $b) {
+        $n = 0
+        for ($y = 0; $y -lt $a.Height; $y += 2) {
+            for ($x = 0; $x -lt $a.Width; $x += 2) {
+                $p = $a.GetPixel($x, $y); $q = $b.GetPixel($x, $y)
+                if ([Math]::Abs($p.R - $q.R) + [Math]::Abs($p.G - $q.G) + [Math]::Abs($p.B - $q.B) -gt 60) { $n++ }
+            }
+        }
+        $n
+    }
+
+    $before = Strip-Shot
     Click-At $updateCenter                       # "check for updates"
     Start-Sleep -Milliseconds 1500
     Check "dock still running after check" (-not $old.HasExited) ""
+
+    $after = Strip-Shot
+    # Kept, for eyeballing how the notes came out; the check below only knows that they did.
+    $shot = Join-Path $env:TEMP "FluidDock-notes.png"
+    & "$PSScriptRoot\Capture.ps1" -Out $shot -X $panelL -Y ($rect.T + $ShadowMargin) -W $PanelWidth -H ($panelBottom - $rect.T - $ShadowMargin) | Out-Null
+    $changed = Strip-Diff $before $after
+    $before.Dispose(); $after.Dispose()
+    Check "release notes appeared under the row" ($changed -gt 400) "$changed sampled pixels changed"
 
     Click-At $updateCenter                       # "update to V9.9"
 

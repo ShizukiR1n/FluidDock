@@ -29,6 +29,17 @@ internal static class TextRaster
         FormatFlags = StringFormatFlags.MeasureTrailingSpaces | StringFormatFlags.NoWrap,
     };
 
+    /// <summary>
+    /// The same, minus NoWrap, for text that is allowed to break. Word trimming so a line that
+    /// would overflow breaks at a space where there is one, and between characters - which is
+    /// where Chinese breaks anyway - where there is not.
+    /// </summary>
+    private static readonly StringFormat Wrapping = new(StringFormat.GenericTypographic)
+    {
+        FormatFlags = StringFormatFlags.MeasureTrailingSpaces,
+        Trimming = StringTrimming.Word,
+    };
+
     private static readonly Bitmap Scratch = new(1, 1, PixelFormat.Format32bppArgb);
     private static readonly System.Drawing.Graphics Measurer = CreateMeasurer();
 
@@ -69,6 +80,37 @@ internal static class TextRaster
             g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
             using var brush = new SolidBrush(color);
             g.DrawString(text, font, brush, 1f, 1f, Format);
+        }
+
+        return bitmap;
+    }
+
+    /// <summary>Width and height of the text wrapped to <paramref name="maxWidth"/>, in pixels.</summary>
+    public static SizeF MeasureWrapped(string text, Font font, float maxWidth)
+    {
+        if (string.IsNullOrEmpty(text)) return SizeF.Empty;
+        lock (Measurer) return Measurer.MeasureString(text, font, new SizeF(maxWidth, float.MaxValue), Wrapping);
+    }
+
+    /// <summary>
+    /// Draws a paragraph, breaking lines at <paramref name="maxWidth"/>, into a bitmap that is
+    /// always that wide - so the wrap the caller measured against is the wrap that is drawn.
+    /// Newlines in the text are honoured as well.
+    /// </summary>
+    public static Bitmap RenderWrapped(string text, Font font, Color color, float maxWidth)
+    {
+        SizeF size = MeasureWrapped(text, font, maxWidth);
+
+        int width = Math.Max(1, (int)MathF.Ceiling(maxWidth) + 2);
+        int height = Math.Max(1, (int)MathF.Ceiling(size.Height) + 2);
+
+        var bitmap = new Bitmap(width, height, PixelFormat.Format32bppArgb);
+        using (var g = System.Drawing.Graphics.FromImage(bitmap))
+        {
+            g.Clear(Color.Transparent);
+            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            using var brush = new SolidBrush(color);
+            g.DrawString(text, font, brush, new RectangleF(1f, 1f, maxWidth, size.Height + 1f), Wrapping);
         }
 
         return bitmap;

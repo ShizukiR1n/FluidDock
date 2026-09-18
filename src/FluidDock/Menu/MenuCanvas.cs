@@ -169,6 +169,33 @@ internal sealed class MenuCanvas
     }
 
     /// <summary>
+    /// A paragraph: text broken into lines at <paramref name="maxWidth"/>, in a sprite that is
+    /// that wide and as tall as the lines came to. For the one place in the panel that shows
+    /// prose rather than a label - the release notes under the update row.
+    /// </summary>
+    public SpriteVisual Paragraph(string text, GdiFont font, GdiColor color, float maxWidth)
+    {
+        SpriteVisual visual = Own(Compositor.CreateSpriteVisual());
+
+        if (string.IsNullOrEmpty(text))
+        {
+            visual.Size = Vector2.Zero;
+            return visual;
+        }
+
+        CompositionDrawingSurface surface;
+        using (System.Drawing.Bitmap bitmap = TextRaster.RenderWrapped(text, font, color, maxWidth))
+        {
+            surface = Own(Surfaces.CreateSurface(bitmap));
+            visual.Size = new Vector2(bitmap.Width, bitmap.Height);
+        }
+
+        CompositionSurfaceBrush brush = Own(Compositor.CreateSurfaceBrush(surface));
+        visual.Brush = brush;
+        return visual;
+    }
+
+    /// <summary>
     /// Shortens a string with an ellipsis until it fits, and returns it unchanged if it already does.
     ///
     /// Measured rather than counted, because the panel's labels are whatever the user's programs

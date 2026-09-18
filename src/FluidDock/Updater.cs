@@ -79,6 +79,22 @@ internal sealed class Updater
     private int _percent;
     private string _error = string.Empty;
 
+    /// <summary>How many lines of a release's notes the panel will show. Past that it is a changelog, not a summary.</summary>
+    private const int MaxNoteLines = 20;
+
+    /// <summary>What the found version says it fixed and added, ready to draw, or null when there is nothing to show.</summary>
+    public string? Notes { get; private set; }
+
+    /// <summary>The heading over <see cref="Notes"/>.</summary>
+    public string NotesHeading => _latest is null ? string.Empty : $"{Label(_latest)} 更新内容";
+
+    /// <summary>
+    /// Raised when the panel's shape has to change - the notes appeared or went away - as
+    /// opposed to <see cref="Changed"/>, which is for the two strings on the update row. A row
+    /// that grew a paragraph is a taller panel, and that is a rebuild rather than a refresh.
+    /// </summary>
+    public event Action? LayoutChanged;
+
     /// <summary>The version this exe was built as. Compared against the release tag, so the tag has to be a version.</summary>
     public static Version Current { get; } = Normalize(typeof(Updater).Assembly.GetName().Version ?? new Version(0, 0));
 
@@ -165,20 +181,29 @@ internal sealed class Updater
         {
             try
             {
-                (Version latest, string? url, long size, string? digest) = await FetchLatest().ConfigureAwait(false);
+                Release release = await FetchLatest().ConfigureAwait(false);
 
                 _defer(() =>
                 {
-                    _latest = latest;
-                    _assetUrl = url;
-                    _assetSize = size;
-                    _assetDigest = digest;
+                    _latest = release.Version;
+                    _assetUrl = release.AssetUrl;
+                    _assetSize = release.AssetSize;
+                    _assetDigest = release.AssetDigest;
 
-                    if (latest <= Current) Enter(UpdatePhase.UpToDate);
-                    else if (url is null) Fail($"{Label(latest)} 里没有 {AssetName}");
+                    bool newer = release.Version > Current;
+
+                    if (!newer) Enter(UpdatePhase.UpToDate);
+                    else if (release.AssetUrl is null) Fail($"{Label(release.Version)} 里没有 {AssetName}");
                     else Enter(UpdatePhase.Available);
 
-                    _note($"update check: current {Label(Current)}, latest {Label(latest)}, asset {(url is null ? "missing" : $"{size} bytes")}");
+                    // The notes belong to a version worth updating to, and to nothing else: a
+                    // check that came back "up to date" takes any earlier notes down with it.
+                    string? notes = newer && release.AssetUrl is not null ? release.Notes : null;
+                    bool reshaped = (Notes is null) != (notes is null) || Notes != notes;
+                    Notes = notes;
+                    if (reshaped) LayoutChanged?.Invoke();
+
+                    _note($"update check: current {Label(Current)}, latest {Label(release.Version)}, asset {(release.AssetUrl is null ? "missing" : $"{release.AssetSize} bytes")}, notes {(notes is null ? "none" : $"{notes.Count(c => c == '\n') + 1} lines")}");
                 });
             }
             catch (Exception ex)
@@ -257,7 +282,10 @@ internal sealed class Updater
         }
     }
 
-    private async Task<(Version, string?, long, string?)> FetchLatest()
+    /// <summary>One release, as much of it as the updater cares about.</summary>
+    private sealed record Release(Version Version, string? AssetUrl, long AssetSize, string? AssetDigest, string? Notes);
+
+    private async Task<Release> FetchLatest()
     {
         string api = Environment.GetEnvironmentVariable(ApiVariable)
             ?? $"https://api.github.com/repos/{Owner}/{Repo}/releases/latest";
@@ -306,7 +334,47 @@ internal sealed class Updater
             }
         }
 
-        return (latest, url, size, digest);
+        string? body = root.TryGetProperty("body", out JsonElement b) && b.ValueKind == JsonValueKind.String
+            ? b.GetString()
+            : null;
+
+        return new Release(latest, url, size, digest, TidyNotes(body));
+    }
+
+    /// <summary>
+    /// A release body, as the panel can show it: one line per line, the markdown that release
+    /// notes are usually written in reduced to what a paragraph of plain text can carry.
+    /// Bullets become bullets, headings become lines, emphasis marks and code ticks go, blank
+    /// lines go, and anything past <see cref="MaxNoteLines"/> is cut with a line saying so.
+    /// Null when nothing is left.
+    /// </summary>
+    private static string? TidyNotes(string? body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return null;
+
+        var lines = new List<string>();
+
+        foreach (string raw in body.Replace("\r\n", "\n").Split('\n'))
+        {
+            string line = raw.Trim();
+            if (line.Length == 0) continue;
+
+            line = line.TrimStart('#').TrimStart();
+            if (line.StartsWith("- ") || line.StartsWith("* ") || line.StartsWith("+ "))
+                line = "• " + line[2..];
+
+            line = line.Replace("**", string.Empty).Replace("`", string.Empty).Trim();
+            if (line.Length == 0) continue;
+
+            lines.Add(line);
+            if (lines.Count == MaxNoteLines)
+            {
+                lines.Add("…");
+                break;
+            }
+        }
+
+        return lines.Count == 0 ? null : string.Join('\n', lines);
     }
 
     /// <summary>

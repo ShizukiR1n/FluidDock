@@ -10,7 +10,7 @@
       The one place the version number lives. The panel shows it and the updater compares it
       against the release tag, so the tag for this build is v0.6 - bump both together.
     -->
-    <Version>0.6.0</Version>
+    <Version>0.6.1</Version>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>

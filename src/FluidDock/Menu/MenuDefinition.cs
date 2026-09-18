@@ -174,13 +174,7 @@ internal static class MenuDefinition
                 // One row that walks itself from "check" to "update" to "restarting", so a fix
                 // is a click here rather than a download and a rebuilt icon list. The version
                 // under the panel's title is what it compares against.
-                new MenuSection("更新")
-                {
-                    Rows =
-                    {
-                        new UpdateRow(context.Update),
-                    },
-                },
+                Updates(context),
 
                 new MenuSection("关于")
                 {
@@ -219,6 +213,23 @@ internal static class MenuDefinition
         }
 
         section.Reorder = context.Items.Move;
+        return section;
+    }
+
+    /// <summary>
+    /// The update row, and under it - only once a check has found a newer version - what that
+    /// version says it changed. The notes are a row of their own rather than part of the update
+    /// row because they change the panel's height, and height is settled when the panel is
+    /// built; the updater raises LayoutChanged and the panel is built again, through here.
+    /// </summary>
+    private static MenuSection Updates(MenuContext context)
+    {
+        var section = new MenuSection("更新");
+        section.Rows.Add(new UpdateRow(context.Update));
+
+        if (context.Update.Notes is { } notes)
+            section.Rows.Add(new NotesRow(context.Update.NotesHeading, notes));
+
         return section;
     }
 
