@@ -127,7 +127,7 @@ ai_voice_input_bundle64.dll  ...
 
 Release 的资产就是 `tools\Publish.ps1` 产出的那一个自包含 exe，故意只有一个文件：`assets\tray.ico` 缺了托盘会退回到编译进 exe 的那份图标，所以没有别的要发。版本号只在 `FluidDock.csproj` 的 `<Version>` 一处，面板标题下显示的和更新器拿去比较的都是它；Release 的标签写成 `v0.6` 这种形式，标签里数字前面的字符会被去掉。**两个要一起改。**
 
-仓库是私有的，私有仓库的 API 和 Release 资产对没登录的人一律回 404。所以更新器会读 `config\github-token.txt`（或环境变量 `FLUIDDOCK_GITHUB_TOKEN`）：一个对这个仓库有只读 contents 权限的 fine-grained token 就够。文件不存在时行里会写「仓库不可见：需要 token」。仓库改成公开就什么都不用配。资产是通过 API 地址加 `Accept: application/octet-stream` 拿的 —— 只有这条路认 token；它回的重定向由代码自己跟，不把 token 转发给存储那台主机，那边收到会直接拒绝。
+仓库是公开的，所以什么都不用配。token 那条路留着是为了仓库万一改回私有：私有仓库的 API 和 Release 资产对没登录的人一律回 404，这时更新器会读 `config\github-token.txt`（或环境变量 `FLUIDDOCK_GITHUB_TOKEN`），一个对这个仓库有只读 contents 权限的 fine-grained token 就够；文件不存在时行里会写「仓库不可见：需要 token」。资产是通过 API 地址加 `Accept: application/octet-stream` 拿的 —— 公开私有都走这条，且只有这条路认 token；它回的重定向由代码自己跟，不把 token 转发给存储那台主机，那边收到会直接拒绝。
 
 `tools\UpdateTest.ps1` 不碰 GitHub：本机起一个 HTTP 服务假装成 Release（标签 v9.9，资产是 `dist\FluidDock.exe`），用 `FLUIDDOCK_RELEASES_API` 把 Dock 指过去，然后真的点面板、真的下载、真的换掉 `bin\` 里那个几百 KB 的 apphost、真的重启。这台机器上有一个本地代理，环境变量里的 `NO_PROXY` 不含回环地址，脚本自己补上，否则连 127.0.0.1 都会被代理回一个 502。
 
