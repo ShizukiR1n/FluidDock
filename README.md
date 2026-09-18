@@ -2,11 +2,7 @@
 
 Windows 上的 macOS 风格 Dock，用 C# + `Windows.UI.Composition` 写的。
 
-做它的起因是现有的同类软件（RocketDock / Nexus / MyDockFinder）动画质感都不行，而原因几乎是同一个：**动画跑在应用的 UI 线程上**，线程一被布局、图标加载、进程枚举阻塞就掉帧。macOS Dock 的流畅来自 Core Animation —— 动画由独立进程按刷新率求值，和应用逻辑彻底解耦。
-
-Windows 上的等价物是 `Windows.UI.Composition`：`ExpressionAnimation` 由 DWM 合成线程求值。这条承诺是可测的，不是说说而已 —— `tools\StallTest.ps1` 会在 UI 线程上 `Thread.Sleep`，然后证明图标在 UI 线程确凿卡死期间仍在动。
-
-目标环境：1920×1080 @ 239Hz、Windows 10 22H2 (19045)、100% 缩放。
+目前软件还处在早期适配阶段，可能会有诸多问题，如有 bug 欢迎反馈。
 
 ---
 
