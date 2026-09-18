@@ -40,8 +40,8 @@ internal static class Program
         if (!ours) return 0;
 
         // The exe an update renamed aside. Deleted by the version that replaced it, once that
-        // version is the one running - which is now.
-        Updater.CleanUp();
+        // version is the one running - which is now. In the background, with retries: see there.
+        Updater.CleanUp(Note);
 
         CompositionHost? graphics = null;
         DockWindow? dock = null;

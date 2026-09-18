@@ -218,7 +218,9 @@ try {
     while (-not $old.HasExited -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
     Check "old process exited" $old.HasExited "pid $($old.Id)"
 
-    $deadline = (Get-Date).AddSeconds(15)
+    # Long enough for the clean-up's retries: the new process deletes the old exe once a second
+    # for up to thirty, because the file stays held a moment past the old process's exit.
+    $deadline = (Get-Date).AddSeconds(40)
     $fresh = $null
     while ((Get-Date) -lt $deadline) {
         $fresh = Get-Process FluidDock -ErrorAction SilentlyContinue | Where-Object { $_.Id -ne $old.Id } | Select-Object -First 1

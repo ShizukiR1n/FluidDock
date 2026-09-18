@@ -31,8 +31,9 @@ internal enum UpdatePhase
 /// <c>FluidDock.exe.new</c>, the running one is renamed to <c>FluidDock.exe.old</c>, the new one
 /// takes its name, is started, and this process quits. The new process waits for this one to go
 /// (see <c>--after-update</c> in Program.Main - the single-instance mutex is still held until
-/// then), and deletes the <c>.old</c> on its next start. If the second rename fails the first is
-/// undone, so the worst case is the version that was already running.
+/// then), and deletes the <c>.old</c> once it is running, retrying for a while because the file
+/// stays held a moment past the exit (see <see cref="CleanUp"/>). If the second rename fails
+/// the first is undone, so the worst case is the version that was already running.
 ///
 /// The release asset is the single self-contained exe that <c>tools\Publish.ps1</c> produces -
 /// deliberately the one file. The tray icon falls back to the one compiled in when
@@ -156,21 +157,52 @@ internal sealed class Updater
         }
     }
 
+    /// <summary>How long to keep trying to delete the previous exe, and how often. Well past anything measured.</summary>
+    private const int CleanUpAttempts = 30;
+    private static readonly TimeSpan CleanUpInterval = TimeSpan.FromSeconds(1);
+
     /// <summary>
     /// Removes the previous version's exe, left behind by the swap that started this process.
-    /// Quietly: if it is still exiting the delete fails, and the next start gets it.
+    ///
+    /// With retries, off the UI thread. The first version of this deleted once and gave up, on
+    /// the theory that having waited for the old process to exit was enough - and it was not:
+    /// the first real update left <c>FluidDock.exe.old</c> behind, and by the time anyone looked
+    /// the file opened exclusively without complaint. A process is signalled as exited a little
+    /// before its image file is released, and a fresh 95 MB file that has just changed name is
+    /// also exactly what an antivirus scans. Either way the window is short, so the answer is to
+    /// ask again for a while rather than to wait for a start that may be days away.
     /// </summary>
-    public static void CleanUp()
+    public static void CleanUp(Action<string> note)
     {
-        try
+        string? exe = Environment.ProcessPath;
+        if (exe is null) return;
+
+        string old = exe + ".old";
+        if (!File.Exists(old)) return;
+
+        _ = Task.Run(async () =>
         {
-            string? exe = Environment.ProcessPath;
-            if (exe is not null && File.Exists(exe + ".old")) File.Delete(exe + ".old");
-        }
-        catch
-        {
-            // Next time.
-        }
+            for (int attempt = 1; attempt <= CleanUpAttempts; attempt++)
+            {
+                try
+                {
+                    File.Delete(old);
+                    note($"update clean-up: removed {Path.GetFileName(old)} on attempt {attempt}");
+                    return;
+                }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    await Task.Delay(CleanUpInterval).ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    note($"update clean-up failed: {ex.GetType().Name}: {ex.Message}");
+                    return;
+                }
+            }
+
+            note($"update clean-up: {Path.GetFileName(old)} still in use after {CleanUpAttempts} attempts; next start");
+        });
     }
 
     private void Check()
