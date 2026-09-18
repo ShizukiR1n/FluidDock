@@ -47,6 +47,9 @@ internal sealed class MenuContext
     public required Action OpenConfig { get; init; }
 
     public required Action Quit { get; init; }
+
+    /// <summary>The in-app update. Owns its own state; the row only reads it. See <see cref="Updater"/>.</summary>
+    public required Updater Update { get; init; }
 }
 
 /// <summary>
@@ -71,11 +74,12 @@ internal sealed class MenuContext
 internal static class MenuDefinition
 {
     /// <summary>
-    /// Shown under the title. Bumped by hand alongside the release tag - there is one string and
-    /// this is it, so a version on screen that disagrees with the tag is a typo rather than a
-    /// build-configuration mystery.
+    /// Shown under the title. Read from the assembly, which gets it from <c>&lt;Version&gt;</c> in
+    /// the project file - the one place the number lives. It has to be a real number now rather
+    /// than a hand-typed string, because the updater compares it against the release tag, and a
+    /// build that called itself 0.5 while tagged 0.6 would offer to update to itself forever.
     /// </summary>
-    public const string Version = "正式版 Ver 0.5";
+    public static readonly string Version = $"正式版 {Updater.Label(Updater.Current)}";
 
     /// <summary>Layer names, in the order <see cref="DockLayer"/> declares them.</summary>
     private static readonly string[] LayerNames = ["桌面", "普通", "置顶"];
@@ -164,6 +168,17 @@ internal static class MenuDefinition
                             () => Metrics().ScreenMargin,
                             value => Metrics().ScreenMargin = value,
                             value => $"{value:0} px"),
+                    },
+                },
+
+                // One row that walks itself from "check" to "update" to "restarting", so a fix
+                // is a click here rather than a download and a rebuilt icon list. The version
+                // under the panel's title is what it compares against.
+                new MenuSection("更新")
+                {
+                    Rows =
+                    {
+                        new UpdateRow(context.Update),
                     },
                 },
 

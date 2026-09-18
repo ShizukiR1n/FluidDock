@@ -20,10 +20,17 @@ internal static class Program
     private static int Main(string[] args)
     {
         int exitAfterSeconds = 0;
+        int predecessor = 0;
         for (int i = 0; i < args.Length - 1; i++)
         {
             if (args[i] == "--exit-after") int.TryParse(args[i + 1], out exitAfterSeconds);
+            if (args[i] == "--after-update") int.TryParse(args[i + 1], out predecessor);
         }
+
+        // Started by the version we are replacing, which is still on its way out and still holds
+        // the single-instance mutex below. Wait for it, or the update ends with no dock at all:
+        // this process would see the mutex taken and quit, a moment before the old one did.
+        if (predecessor > 0) AwaitExit(predecessor);
 
         // Once this is a shortcut people double-click, launching it twice is a matter of when,
         // not if - and two docks stacked on the same pixels look like one dock with broken
@@ -31,6 +38,10 @@ internal static class Program
         // desktop, and is entitled to its own dock.
         using var single = new Mutex(true, @"Local\FluidDock.SingleInstance", out bool ours);
         if (!ours) return 0;
+
+        // The exe an update renamed aside. Deleted by the version that replaced it, once that
+        // version is the one running - which is now.
+        Updater.CleanUp();
 
         CompositionHost? graphics = null;
         DockWindow? dock = null;
@@ -98,6 +109,15 @@ internal static class Program
                 (ask, apply) => built?.Dialog(ask, apply),
                 action => built?.Defer(action));
 
+            // Same deferral route as the item list's, for the same reason: its results arrive from
+            // the pool and have to be applied on this thread, and the row that shows them may be
+            // in the middle of dispatching the click that asked.
+            var updater = new Updater(
+                Path.GetDirectoryName(DockConfig.DefaultPath)!,
+                action => built?.Defer(action),
+                () => Win32.PostQuitMessage(0),
+                Note);
+
             // The page factory, and the one place a panel build begins - so it is also the place
             // the theme is settled, before a single row asks MenuTheme what colour it is.
             var panel = new MenuWindow(host, () =>
@@ -127,6 +147,7 @@ internal static class Program
                 },
                 OpenConfig = () => OpenConfig(settings.Path),
                 Quit = () => Win32.PostQuitMessage(0),
+                Update = updater,
                 });
             });
 
@@ -144,6 +165,10 @@ internal static class Program
             panel.Changed += settings.Save;
             items.Changed += settings.Save;
             items.StructureChanged += panel.Reload;
+
+            // The update row reads its two strings from the updater; this is what makes it look
+            // again. Nothing is saved - none of this state belongs in dock.json.
+            updater.Changed += panel.Refresh;
 
             panel.Create();
             Note($"Menu window created, hwnd=0x{panel.Handle:X}");
@@ -285,6 +310,26 @@ internal static class Program
         catch (Exception ex)
         {
             Note($"open config failed: {ex.GetType().Name}: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Waits for the process that started this one to finish quitting.
+    ///
+    /// Bounded, because a predecessor that hangs on its way out should not take the update with
+    /// it: after the wait the mutex decides as usual, and if the old one really is still there
+    /// the user has the dock they had. Any failure to look the process up means it is gone.
+    /// </summary>
+    private static void AwaitExit(int pid)
+    {
+        try
+        {
+            using var previous = System.Diagnostics.Process.GetProcessById(pid);
+            previous.WaitForExit(15_000);
+        }
+        catch
+        {
+            // Already exited, which is the outcome being waited for.
         }
     }
 

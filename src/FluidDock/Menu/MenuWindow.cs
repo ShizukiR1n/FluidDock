@@ -302,6 +302,13 @@ internal sealed class MenuWindow : IDisposable
     }
 
     /// <summary>
+    /// Has every row re-read what it shows. For state that changes while the panel is on screen
+    /// and is not a setting - the update's progress - as opposed to a config edit, which
+    /// <see cref="Open"/> handles by itself.
+    /// </summary>
+    public void Refresh() => _panel?.Refresh();
+
+    /// <summary>
     /// Builds the panel again, in place.
     ///
     /// Adding or removing an entry changes how tall the panel is, and its height is decided once

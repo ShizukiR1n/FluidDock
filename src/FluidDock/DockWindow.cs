@@ -26,6 +26,14 @@ internal sealed class DockWindow : IDisposable
 
     private static readonly IntPtr TimerShrinkRegion = new(1);
     private static readonly IntPtr TimerRejoinDesktop = new(2);
+    private static readonly IntPtr TimerRepaintUnderlay = new(3);
+
+    /// <summary>
+    /// How long after a shell event to paint the underlay a second time. See RepaintUnderlay
+    /// for why once is not enough. Half a second is well past any shell repaint and still short
+    /// enough that a user looking at the desktop does not register it.
+    /// </summary>
+    private const uint UnderlaySettleMs = 500;
 
     /// <summary>
     /// How long the dock stays at full size after the last thing that needed the room ended.
@@ -239,15 +247,25 @@ internal sealed class DockWindow : IDisposable
     }
 
     /// <summary>
-    /// Keeps the dock above the desktop without making it topmost.
+    /// Watches the shell's window events, for one of two jobs depending on the layer.
     ///
-    /// Clicking the desktop activates Progman, and activation raises it - over an ordinary
-    /// window like ours. So the dock vanished the moment the user clicked the wallpaper and
-    /// stayed gone, which is the one place it is supposed to be. Watching for the desktop
-    /// taking the foreground and lifting ourselves back over it fixes that without reaching for
-    /// WS_EX_TOPMOST, which would put us over the user's applications again.
+    /// Normal layer: keeps the dock above the desktop without making it topmost. Clicking the
+    /// desktop activates Progman, and activation raises it - over an ordinary window like ours.
+    /// So the dock vanished the moment the user clicked the wallpaper and stayed gone, which is
+    /// the one place it is supposed to be. Watching for the desktop taking the foreground and
+    /// lifting ourselves back over it fixes that without reaching for WS_EX_TOPMOST, which would
+    /// put us over the user's applications again.
     ///
-    /// Only foreground changes fire this, so it costs nothing while the user works.
+    /// Desktop layer: repaints the pixels under the icons whenever the desktop may just have
+    /// been uncovered, because nothing tells us that it was given a fresh surface with garbage
+    /// in our share of it. See RepaintUnderlay. The signals are a foreground change - Alt+Tab
+    /// out of a fullscreen game, or the game quitting - and a window being minimised, which is
+    /// what Win+D does to every window. Win+D needs the second one: it leaves the desktop's
+    /// WorkerW as GetForegroundWindow's answer without ever raising EVENT_SYSTEM_FOREGROUND for
+    /// it. Measured - four Win+D presses in a row, no foreground event for any of them, while
+    /// the Win+D that restored the windows afterwards raised two.
+    ///
+    /// Only these events fire this, so it costs nothing while the user works.
     /// </summary>
     private void WatchForeground()
     {
@@ -261,20 +279,39 @@ internal sealed class DockWindow : IDisposable
             _foregroundHook = null;
         }
 
-        if (_config.Layer != DockLayer.Normal) return;
+        if (_config.Layer == DockLayer.Top) return;
 
-        _foregroundHook = (_, _, hwnd, idObject, _, _, _) =>
+        _foregroundHook = (_, eventType, hwnd, idObject, _, _, _) =>
         {
             // idObject == OBJID_WINDOW. The event also fires for accessibility child objects,
             // which are not window activations and would have us re-raising constantly.
-            if (idObject != 0 || !IsDesktopWindow(hwnd)) return;
+            if (idObject != 0) return;
+
+            if (_config.Layer == DockLayer.Desktop)
+            {
+                // The hook spans a range, and the range has other events in it (menus, moves,
+                // scrolling). Only the three that mean "the desktop may be showing now".
+                if (eventType is Win32.EVENT_SYSTEM_FOREGROUND
+                    or Win32.EVENT_SYSTEM_MINIMIZESTART
+                    or Win32.EVENT_SYSTEM_MINIMIZEEND)
+                    RepaintUnderlay();
+                return;
+            }
+
+            if (eventType != Win32.EVENT_SYSTEM_FOREGROUND || !IsDesktopWindow(hwnd)) return;
 
             Win32.SetWindowPos(_hwnd, Win32.HWND_TOP, 0, 0, 0, 0,
                 Win32.SWP_NOMOVE | Win32.SWP_NOSIZE | Win32.SWP_NOACTIVATE);
         };
 
+        // The normal layer wants foreground changes only; the desktop layer wants minimise events
+        // too, and they sit a few values up, so it takes the whole span and filters above.
+        uint last = _config.Layer == DockLayer.Desktop
+            ? Win32.EVENT_SYSTEM_MINIMIZEEND
+            : Win32.EVENT_SYSTEM_FOREGROUND;
+
         _foregroundHookHandle = Win32.SetWinEventHook(
-            Win32.EVENT_SYSTEM_FOREGROUND, Win32.EVENT_SYSTEM_FOREGROUND,
+            Win32.EVENT_SYSTEM_FOREGROUND, last,
             IntPtr.Zero, _foregroundHook, 0, 0, Win32.WINEVENT_OUTOFCONTEXT);
     }
 
@@ -596,7 +633,14 @@ internal sealed class DockWindow : IDisposable
                 return IntPtr.Zero;
 
             case Win32.WM_ERASEBKGND:
+                // Nothing to erase separately: what the window owns is painted in WM_PAINT.
                 return new IntPtr(1);
+
+            case Win32.WM_PAINT:
+                // Not left to DefWindowProc, which validates without drawing a pixel - and the
+                // pixels are ours to draw. See PaintUnderlay.
+                PaintUnderlay();
+                return IntPtr.Zero;
 
             case Win32.WM_TIMER:
                 if (wParam == TimerShrinkRegion)
@@ -609,6 +653,12 @@ internal sealed class DockWindow : IDisposable
                     Win32.KillTimer(_hwnd, TimerRejoinDesktop);
                     _rejoinLeft--;
                     JoinDesktop();
+                }
+                else if (wParam == TimerRepaintUnderlay)
+                {
+                    Win32.KillTimer(_hwnd, TimerRepaintUnderlay);
+                    Win32.RedrawWindow(_hwnd, IntPtr.Zero, IntPtr.Zero,
+                        Win32.RDW_INVALIDATE | Win32.RDW_UPDATENOW);
                 }
                 return IntPtr.Zero;
 
@@ -648,10 +698,74 @@ internal sealed class DockWindow : IDisposable
                 // through the tray window, which nothing outside this process can take away.
                 Win32.KillTimer(_hwnd, TimerShrinkRegion);
                 Win32.KillTimer(_hwnd, TimerRejoinDesktop);
+                Win32.KillTimer(_hwnd, TimerRepaintUnderlay);
                 return IntPtr.Zero;
         }
 
         return Win32.DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    /// <summary>
+    /// Paints the pixels the dock's window owns in the desktop's surface.
+    ///
+    /// On the desktop layer the dock is a child of the desktop window, and a child has no
+    /// surface of its own: its rectangle is a hole in the parent's, one the parent never paints
+    /// into (WS_CLIPCHILDREN, see UpdateRegion). WS_EX_NOREDIRECTIONBITMAP changes nothing about
+    /// that for a child - a DC on this window is the parent's surface, clipped to our region. So
+    /// whatever those pixels hold shows through under the icons, and until now nobody wrote
+    /// them: WM_ERASEBKGND said "done" and WM_PAINT went to DefWindowProc, which validates
+    /// without painting. That held up only while the pixels happened to be right - the
+    /// wallpaper, or the black that the icon layer's WorkerW treats as transparent.
+    ///
+    /// A fullscreen game breaks it. While the game covers the screen the desktop is fully
+    /// occluded and DWM may drop its surface; the one it gets back on Win+D holds whatever was
+    /// in that memory. Explorer repaints its share, and ours stays garbage - the game's last
+    /// frame, or a dark smear of it - as one rectangle per icon, the exact shape of the idle
+    /// region. Measured: a FillRect through the dock's DC puts colour on screen in precisely
+    /// that shape, and a black fill takes it away again.
+    ///
+    /// The fill is PaintDesktop, which draws the wallpaper positioned as it is on screen. It is
+    /// right in both desktop layouts. Under Progman the parent's surface holds the wallpaper
+    /// itself (the SWP_NOCOPYBITS smear in PositionWindow was a copy of it). In the split layout,
+    /// where the icon view sits in a WorkerW whose surface is black-keyed over a second WorkerW
+    /// holding the wallpaper, wallpaper pixels are indistinguishable from the transparency they
+    /// replace - measured on that layout, zero pixels differ. A plain black fill would be right
+    /// only in the second layout and a row of black squares in the first.
+    /// </summary>
+    private void PaintUnderlay()
+    {
+        IntPtr hdc = Win32.BeginPaint(_hwnd, out Win32.PAINTSTRUCT ps);
+        if (hdc == IntPtr.Zero) return;
+
+        // Only once parented. Floating, the window is a WS_EX_NOREDIRECTIONBITMAP top-level with
+        // no surface at all, and the desktop under it repaints itself.
+        if (_desktop != IntPtr.Zero) Win32.PaintDesktop(hdc);
+
+        Win32.EndPaint(_hwnd, ref ps);
+    }
+
+    /// <summary>
+    /// Repaints the underlay now, and once more after things have settled.
+    ///
+    /// Called from the shell event hook on the desktop layer - on a foreground change and on a
+    /// window being minimised or restored, see WatchForeground for why both. The surface loss
+    /// that leaves garbage under the icons is not reported to us: the parent gets its WM_PAINT,
+    /// and whether a clipped child is invalidated along with it is undocumented and, going by
+    /// the residue, does not happen. Every way out of a fullscreen game does one of the two -
+    /// Win+D minimises, Alt+Tab and quitting change the foreground - so those are the signal.
+    /// The cost is one wallpaper fill of a few icon-sized rectangles, which is nothing.
+    ///
+    /// The second pass is for ordering. DWM replaces the surface on its own schedule around the
+    /// time the desktop is uncovered, and the event can arrive on either side of that; a paint
+    /// that landed in the surface being retired is lost. Painting again once the dust has
+    /// settled means the last word is ours.
+    /// </summary>
+    private void RepaintUnderlay()
+    {
+        if (_desktop == IntPtr.Zero) return;
+
+        Win32.RedrawWindow(_hwnd, IntPtr.Zero, IntPtr.Zero, Win32.RDW_INVALIDATE | Win32.RDW_UPDATENOW);
+        Win32.SetTimer(_hwnd, TimerRepaintUnderlay, UnderlaySettleMs, IntPtr.Zero);
     }
 
     /// <summary>

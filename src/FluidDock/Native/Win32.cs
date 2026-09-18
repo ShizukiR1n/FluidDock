@@ -126,6 +126,7 @@ internal static class Win32
     public const uint WM_NULL = 0x0000;
     public const uint WM_QUIT = 0x0012;
     public const uint WM_ERASEBKGND = 0x0014;
+    public const uint WM_PAINT = 0x000F;
     public const uint WM_NCHITTEST = 0x0084;
     public const uint WM_MOUSEMOVE = 0x0200;
     public const uint WM_LBUTTONDOWN = 0x0201;
@@ -260,6 +261,8 @@ internal static class Win32
         IntPtr hook, uint eventType, IntPtr hwnd, int idObject, int idChild, uint thread, uint time);
 
     public const uint EVENT_SYSTEM_FOREGROUND = 0x0003;
+    public const uint EVENT_SYSTEM_MINIMIZESTART = 0x0016;
+    public const uint EVENT_SYSTEM_MINIMIZEEND = 0x0017;
     public const uint WINEVENT_OUTOFCONTEXT = 0x0000;
 
     [DllImport("user32.dll")]
@@ -319,9 +322,40 @@ internal static class Win32
     public const uint RDW_INVALIDATE = 0x0001;
     public const uint RDW_ERASE = 0x0004;
     public const uint RDW_ALLCHILDREN = 0x0080;
+    public const uint RDW_UPDATENOW = 0x0100;
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern bool RedrawWindow(IntPtr hWnd, ref RECT update, IntPtr region, uint flags);
+
+    /// <summary>The whole-window form: a null rectangle and a null region mean the entire client area.</summary>
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool RedrawWindow(IntPtr hWnd, IntPtr update, IntPtr region, uint flags);
+
+    [StructLayout(LayoutKind.Sequential)]
+    public struct PAINTSTRUCT
+    {
+        public IntPtr hdc;
+        public bool fErase;
+        public RECT rcPaint;
+        public bool fRestore;
+        public bool fIncUpdate;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+        public byte[] rgbReserved;
+    }
+
+    [DllImport("user32.dll")]
+    public static extern IntPtr BeginPaint(IntPtr hWnd, out PAINTSTRUCT lpPaint);
+
+    [DllImport("user32.dll")]
+    public static extern bool EndPaint(IntPtr hWnd, ref PAINTSTRUCT lpPaint);
+
+    /// <summary>
+    /// Fills the DC's clip region with the desktop wallpaper (or colour), positioned as it is on
+    /// screen. Documented as "provided primarily for shell desktops", and that is exactly what the
+    /// dock is standing in for when it paints - see DockWindow.PaintUnderlay.
+    /// </summary>
+    [DllImport("user32.dll")]
+    public static extern bool PaintDesktop(IntPtr hdc);
 
     [DllImport("user32.dll", SetLastError = true)]
     public static extern IntPtr SetTimer(IntPtr hWnd, IntPtr id, uint elapseMs, IntPtr callback);
