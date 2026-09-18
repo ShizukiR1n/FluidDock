@@ -45,6 +45,18 @@ internal sealed class TrayIcon : IDisposable
     /// </summary>
     public event Action? ShellRestarted;
 
+    /// <summary>
+    /// The screen changed shape - a resolution change, or the taskbar moving or resizing - and
+    /// the dock has to be placed again.
+    ///
+    /// Heard here and not by the dock because the dock cannot hear it. WM_DISPLAYCHANGE and
+    /// WM_SETTINGCHANGE are broadcast to top-level windows, and on the desktop layer the dock is
+    /// a child of the desktop: the resolution changed, Explorer resized its windows, and the dock
+    /// sat where 1920x1080 had put it, half over the taskbar of a 1680x1050 screen. This window
+    /// is top-level for the whole life of the process, so it is the ear.
+    /// </summary>
+    public event Action? DisplayChanged;
+
     /// <summary>Whether the menu's show item is currently ticked.</summary>
     public bool DockVisible { get; set; } = true;
 
@@ -162,6 +174,15 @@ internal sealed class TrayIcon : IDisposable
         if (msg == Win32.WM_CLOSE)
         {
             ExitRequested?.Invoke();
+            return IntPtr.Zero;
+        }
+
+        // See DisplayChanged. WM_SETTINGCHANGE arrives for a great many things - wallpaper,
+        // environment variables, colours - and only the work area is the dock's business.
+        if (msg == Win32.WM_DISPLAYCHANGE ||
+            (msg == Win32.WM_SETTINGCHANGE && (uint)(long)wParam == Win32.SPI_SETWORKAREA))
+        {
+            DisplayChanged?.Invoke();
             return IntPtr.Zero;
         }
 

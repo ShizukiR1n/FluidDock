@@ -187,6 +187,7 @@ internal static class Program
             // leave a process with a tray icon, no window, and no way out but Task Manager.
             notify.ExitRequested += () => Win32.PostQuitMessage(0);
             notify.ShellRestarted += () => RebuildDock(window);
+            notify.DisplayChanged += window.OnDisplayChanged;
             notify.Create();
             Note("Tray icon added");
 

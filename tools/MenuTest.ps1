@@ -24,7 +24,7 @@
 # unless the file carries a UTF-8 BOM, so a Chinese literal here would be silently corrupted.
 
 param(
-    [string] $Exe = "D:\AI\work space\win\src\FluidDock\bin\Debug\net9.0-windows10.0.19041.0\FluidDock.exe"
+    [string] $Exe = (Join-Path (Split-Path $PSScriptRoot -Parent) "src\FluidDock\bin\Release\net9.0-windows10.0.19041.0\FluidDock.exe")
 )
 
 $ErrorActionPreference = "Stop"
@@ -130,8 +130,12 @@ try {
     $Top["AddFolder"] = $y + $RowHeight
     $y += 2 * $RowHeight + $SectionGap
 
+    $y += $SectionHeader                      # 常规
+    $Top["ShowDock"]  = $y; $y += $RowHeight
+    $Top["AutoStart"] = $y; $y += $RowHeight + $SectionGap
+
     $y += $SectionHeader                      # 外观
-    $Top["ShowDock"] = $y; $y += $RowHeight
+    $Top["Theme"]    = $y; $y += $RowHeight
     $Top["IconSize"] = $y; $y += $TallRowHeight
     $Top["IconGap"]  = $y; $y += $TallRowHeight + $SectionGap
 
@@ -143,6 +147,11 @@ try {
     $y += $SectionHeader                      # 位置
     $Top["Layer"]        = $y; $y += $RowHeight
     $Top["ScreenMargin"] = $y; $y += $TallRowHeight + $SectionGap
+
+    # One row here until a check finds a newer version, which adds a notes row of content-sized
+    # height under it. Nothing in this script checks for updates, so it is always one row.
+    $y += $SectionHeader                      # 更新
+    $Top["Update"] = $y; $y += $RowHeight + $SectionGap
 
     $y += $SectionHeader                      # 关于
     $Top["Adapter"]    = $y; $y += $RowHeight

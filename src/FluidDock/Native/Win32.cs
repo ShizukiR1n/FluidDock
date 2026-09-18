@@ -239,6 +239,9 @@ internal static class Win32
     // SystemParametersInfo
     public const uint SPI_GETWORKAREA = 0x0030;
 
+    /// <summary>The wParam of the WM_SETTINGCHANGE that says the work area moved - the taskbar was resized, moved or hidden.</summary>
+    public const uint SPI_SETWORKAREA = 0x002F;
+
     // DPI awareness contexts
     public static readonly IntPtr DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = new(-4);
 

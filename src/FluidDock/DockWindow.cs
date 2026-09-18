@@ -27,6 +27,20 @@ internal sealed class DockWindow : IDisposable
     private static readonly IntPtr TimerShrinkRegion = new(1);
     private static readonly IntPtr TimerRejoinDesktop = new(2);
     private static readonly IntPtr TimerRepaintUnderlay = new(3);
+    private static readonly IntPtr TimerReposition = new(4);
+
+    /// <summary>
+    /// How often, and how many times, to place the window again after the screen changed shape.
+    /// See OnDisplayChanged. Explorer resizes the desktop windows on the same broadcast we heard,
+    /// on its own thread, so the first placement may read the old desktop; a second and third,
+    /// half a second apart, read the new one. Measured: the desktop had its new size well
+    /// within the first half second on this machine.
+    /// </summary>
+    private const uint RepositionSettleMs = 500;
+    private const int RepositionPasses = 2;
+
+    /// <summary>Delayed placements still to run after a display change.</summary>
+    private int _repositionLeft;
 
     /// <summary>
     /// How long after a shell event to paint the underlay a second time. See RepaintUnderlay
@@ -660,6 +674,11 @@ internal sealed class DockWindow : IDisposable
                     Win32.RedrawWindow(_hwnd, IntPtr.Zero, IntPtr.Zero,
                         Win32.RDW_INVALIDATE | Win32.RDW_UPDATENOW);
                 }
+                else if (wParam == TimerReposition)
+                {
+                    if (--_repositionLeft <= 0) Win32.KillTimer(_hwnd, TimerReposition);
+                    Reposition();
+                }
                 return IntPtr.Zero;
 
             case Win32.WM_MOUSEMOVE:
@@ -679,10 +698,10 @@ internal sealed class DockWindow : IDisposable
                 OnHotkey((int)wParam);
                 return IntPtr.Zero;
 
-            case Win32.WM_DISPLAYCHANGE:
-            case Win32.WM_SETTINGCHANGE:
-                Rebuild();
-                return IntPtr.Zero;
+            // No WM_DISPLAYCHANGE or WM_SETTINGCHANGE here, and there used to be. They are
+            // broadcast to top-level windows, and on the desktop layer this is not one - so a
+            // resolution change left the dock exactly where the old screen had put it, over the
+            // taskbar of the new one. The tray window hears them for us: see OnDisplayChanged.
 
             case Win32.WM_APP_RELOAD_CONFIG:
                 ReloadConfig();
@@ -699,10 +718,38 @@ internal sealed class DockWindow : IDisposable
                 Win32.KillTimer(_hwnd, TimerShrinkRegion);
                 Win32.KillTimer(_hwnd, TimerRejoinDesktop);
                 Win32.KillTimer(_hwnd, TimerRepaintUnderlay);
+                Win32.KillTimer(_hwnd, TimerReposition);
                 return IntPtr.Zero;
         }
 
         return Win32.DefWindowProcW(hwnd, msg, wParam, lParam);
+    }
+
+    /// <summary>
+    /// Places the dock again after the screen changed shape: a resolution change, or the taskbar
+    /// moving, resizing or hiding. Now, and twice more on a timer.
+    ///
+    /// Called from the tray window, which is the one top-level window this process always has
+    /// and therefore the one that hears the broadcast (see TrayIcon.DisplayChanged). Nothing is
+    /// rebuilt: the icons are the same size on any screen at this DPI, so the tree is right and
+    /// only its window is in the wrong place. PositionWindow reads the work area and the
+    /// desktop's rectangle fresh each time, and the repaint it ends with puts the wallpaper back
+    /// under the icons - which after a mode change is a brand-new surface with nothing in it.
+    /// </summary>
+    public void OnDisplayChanged()
+    {
+        if (_hwnd == IntPtr.Zero) return;
+
+        Reposition();
+
+        _repositionLeft = RepositionPasses;
+        Win32.SetTimer(_hwnd, TimerReposition, RepositionSettleMs, IntPtr.Zero);
+    }
+
+    private void Reposition()
+    {
+        if (_layout is null) return;
+        PositionWindow(_windowW, _windowH);
     }
 
     /// <summary>
