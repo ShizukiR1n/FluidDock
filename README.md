@@ -9,7 +9,7 @@ Windows 上的 macOS 风格 Dock。
 1. 从 [Releases](https://github.com/ShizukiR1n/FluidDock/releases/latest) 下载 `FluidDock.exe`（约 95 MB，自带运行时，不用另装 .NET）。
 2. 放进一个**单独的文件夹**再运行 —— 配置文件 `config\dock.json` 会写在 exe 旁边。
 
-系统要求：Windows 10 1809 或更新，64 位。同时只能运行一个 FluidDock。
+系统要求：Windows 10 1809 或更新，64 位。
 
 ## 图标
 
